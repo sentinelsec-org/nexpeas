@@ -5,6 +5,29 @@
 
 set -o pipefail
 
+# Parse arguments
+DEEP_MODE=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --deep)
+            DEEP_MODE=1
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: ./nexpeas.sh [OPTIONS]"
+            echo ""
+            echo "OPTIONS:"
+            echo "  --deep    Enable deep scanning (additional network correlation, dotfiles, UDP analysis)"
+            echo "  --help    Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            exit 1
+            ;;
+    esac
+done
+
 # Colores vibrantes
 RED='\033[0;91m'
 GREEN='\033[0;92m'
@@ -101,6 +124,46 @@ if [ -f /etc/os-release ]; then
     grep -E "^PRETTY_NAME|^NAME|^VERSION" /etc/os-release | head -3
     echo ""
 fi
+
+# ============================================
+# PROCESO ACTUAL - /proc/self & CONFIG
+# ============================================
+print_header "⚙️  PROCESO ACTUAL & CONFIGURACIÓN"
+
+echo -e "${BLUE}Comando del proceso actual:${NC}"
+if [ -f /proc/self/cmdline ]; then
+    tr '\0' ' ' < /proc/self/cmdline && echo ""
+else
+    echo "N/A"
+fi
+echo ""
+
+echo -e "${BLUE}Hostname del sistema:${NC}"
+cat /etc/hostname 2>/dev/null || echo "N/A"
+echo ""
+
+echo -e "${BLUE}Resoluciones internas (/etc/hosts - principales):${NC}"
+if [ -f /etc/hosts ]; then
+    grep -v "^#" /etc/hosts | grep -v "^$" | grep -v "127.0.0.1\|::1" | head -5 || info "Solo localhost"
+else
+    info "No encontrado"
+fi
+echo ""
+
+echo -e "${BLUE}Archivos interesantes en directorio actual:${NC}"
+CWD=$(pwd)
+FOUND_CWD=0
+for file in app.py main.py config.py config.yml .env requirements.txt package.json settings.py index.js server.js; do
+    if [ -f "$CWD/$file" ]; then
+        SIZE=$(wc -l < "$CWD/$file" 2>/dev/null || echo "?")
+        alert_high "CONFIG: $CWD/$file ($SIZE líneas)"
+        ((FOUND_CWD++))
+    fi
+done
+if [ $FOUND_CWD -eq 0 ]; then
+    info "No hay archivos de config evidentes"
+fi
+echo ""
 
 # ============================================
 # FLAGS Y ARCHIVOS SENSIBLES - BÚSQUEDA RÁPIDA
@@ -259,7 +322,7 @@ echo ""
 # ============================================
 print_header "🌐 PUERTOS ABIERTOS - SERVICIOS ESCUCHANDO"
 
-echo -e "${BLUE}Puertos listening (netstat/ss):${NC}"
+echo -e "${BLUE}Puertos TCP listening (netstat/ss):${NC}"
 if command -v ss &> /dev/null; then
     ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4, $7}' | sort | uniq | while read port service; do
         case "$port" in
@@ -284,6 +347,58 @@ elif command -v netstat &> /dev/null; then
     netstat -tlnp 2>/dev/null | grep LISTEN | awk '{print $4, $NF}' | sort | uniq
 fi
 echo ""
+
+if [ $DEEP_MODE -eq 1 ]; then
+    echo -e "${BLUE}Puertos UDP listening:${NC}"
+    if command -v ss &> /dev/null; then
+        UDP_PORTS=$(ss -ulnp 2>/dev/null | grep -v "UNCONN\|^Netid")
+        if [ ! -z "$UDP_PORTS" ]; then
+            echo "$UDP_PORTS" | while read -r line; do
+                if echo "$line" | grep -q "UNCONN"; then
+                    PORT=$(echo "$line" | awk '{print $4}')
+                    PID=$(echo "$line" | awk '{print $NF}' | grep -oE '[0-9]+')
+                    if [ ! -z "$PORT" ]; then
+                        echo "  $PORT (UDP)"
+                    fi
+                fi
+            done
+        else
+            info "No UDP ports listening"
+        fi
+    else
+        info "UDP check requires 'ss' command"
+    fi
+    echo ""
+
+    echo -e "${BLUE}Correlación Puerto→PID→Comando:${NC}"
+    if [ -f /proc/net/tcp ]; then
+        awk 'NR>1 {
+            split($2, local, ":");
+            port=strtonum("0x" substr(local[2], 1, 4));
+            split($4, state, ":");
+            if (state[1] == "0A") {
+                print port
+            }
+        }' /proc/net/tcp 2>/dev/null | sort -u | while read port; do
+            for pid in /proc/*/fd/*; do
+                if [ -L "$pid" ] 2>/dev/null; then
+                    target=$(readlink "$pid" 2>/dev/null)
+                    if echo "$target" | grep -q "socket:\|TCP"; then
+                        proc_pid=$(echo "$pid" | cut -d'/' -f3)
+                        if [ -f "/proc/$proc_pid/cmdline" ]; then
+                            CMD=$(tr '\0' ' ' < "/proc/$proc_pid/cmdline" 2>/dev/null)
+                            if [ ! -z "$CMD" ]; then
+                                echo "  [PID: $proc_pid] $port → $CMD" | head -c 120
+                                echo ""
+                            fi
+                        fi
+                    fi
+                fi
+            done | head -3
+        done
+    fi
+    echo ""
+fi
 
 # ============================================
 # ARCHIVOS SENSIBLES - PERMISOS DÉBILES
@@ -920,6 +1035,53 @@ if [ -f /proc/sys/kernel/yama/ptrace_scope ]; then
     fi
 fi
 echo ""
+
+if [ $DEEP_MODE -eq 1 ]; then
+    # ============================================
+    # DOTFILES CONFIGURATION ANALYSIS
+    # ============================================
+    print_header "📝 ANÁLISIS DE DOTFILES - CONFIGURACIÓN DE SHELL"
+
+    echo -e "${BLUE}~/.bashrc:${NC}"
+    if [ -f ~/.bashrc ]; then
+        BASHRC_SIZE=$(wc -l < ~/.bashrc 2>/dev/null)
+        echo "  Encontrado ($BASHRC_SIZE líneas)"
+        echo -e "${YELLOW}  - Exports de credenciales:${NC}"
+        grep -E "export.*PASS|export.*KEY|export.*TOKEN|export.*API|export.*SECRET|export.*USER|export.*CRED" ~/.bashrc 2>/dev/null | sed 's/^/    /' || echo "    (ninguno detectado)"
+        echo -e "${YELLOW}  - Aliases potencialmente problemáticos:${NC}"
+        grep "^alias " ~/.bashrc 2>/dev/null | grep -E "sudo|root|rm|chmod" | sed 's/^/    /' || echo "    (ninguno detectado)"
+    else
+        info "~/.bashrc no encontrado"
+    fi
+    echo ""
+
+    echo -e "${BLUE}~/.profile:${NC}"
+    if [ -f ~/.profile ]; then
+        PROFILE_SIZE=$(wc -l < ~/.profile 2>/dev/null)
+        echo "  Encontrado ($PROFILE_SIZE líneas)"
+        grep -E "export.*PASS|export.*KEY|export.*TOKEN|export.*API|export.*SECRET" ~/.profile 2>/dev/null | sed 's/^/    /' || echo "    (sin exports sensibles)"
+    else
+        info "~/.profile no encontrado"
+    fi
+    echo ""
+
+    echo -e "${BLUE}~/.bash_history (últimas 10 líneas interesantes):${NC}"
+    if [ -f ~/.bash_history ]; then
+        grep -iE "password|pass|pwd|sudo|ssh|curl|wget|api|token|secret|credential" ~/.bash_history 2>/dev/null | tail -10 | sed 's/^/  /' | head -5 || info "Sin comandos sensibles en historial"
+    else
+        info "~/.bash_history no encontrado"
+    fi
+    echo ""
+
+    echo -e "${BLUE}~/.ssh/config (si existe):${NC}"
+    if [ -f ~/.ssh/config ]; then
+        echo -e "${ORANGE}  ⚠️  SSH config file encontrado${NC}"
+        grep -E "^Host|^User|^Port|IdentityFile" ~/.ssh/config 2>/dev/null | sed 's/^/    /' || echo "    (no contenido)"
+    else
+        info "~/.ssh/config no encontrado"
+    fi
+    echo ""
+fi
 
 # ============================================
 # RESUMEN FINAL
