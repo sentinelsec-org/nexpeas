@@ -1,0 +1,959 @@
+#!/bin/bash
+
+# NEXPEAS - Next Generation Enum/Priv Escalation Assessment Script
+# Más limpio que linpeas, enfocado en hallazgos relevantes
+
+set -o pipefail
+
+# Colores vibrantes
+RED='\033[0;91m'
+GREEN='\033[0;92m'
+YELLOW='\033[0;93m'
+BLUE='\033[0;94m'
+CYAN='\033[0;96m'
+MAGENTA='\033[0;95m'
+LIME='\033[38;5;82m'
+ORANGE='\033[38;5;208m'
+PINK='\033[38;5;213m'
+BOLD='\033[1m'
+DIM='\033[2m'
+NC='\033[0m' # No Color
+
+# Contadores
+CRITICAL=0
+HIGH=0
+MEDIUM=0
+
+# Banner
+print_banner() {
+    clear
+    echo -e "${PINK}"
+    cat << "EOF"
+    ╔════════════════════════════════════════════════╗
+    ║                                                ║
+    ║        🔓  N E X P E A S  🔓                  ║
+    ║    Privilege Escalation Assessment Tool       ║
+    ║                                                ║
+    ║     ~ Detección de Vectores de Escalada ~     ║
+    ║                                                ║
+    ╚════════════════════════════════════════════════╝
+EOF
+    echo ""
+    echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+}
+
+# Función para imprimir headers
+print_header() {
+    echo -e "\n${MAGENTA}╔═══════════════════════════════════════════════════╗${NC}"
+    echo -e "${MAGENTA}║${NC} ${BOLD}${PINK}$1${NC}${MAGENTA} ║${NC}"
+    echo -e "${MAGENTA}╚═══════════════════════════════════════════════════╝${NC}\n"
+}
+
+# Función para alertas críticas
+alert_critical() {
+    echo -e "${RED}⛔ [CRITICAL]${NC} $1"
+    ((CRITICAL++))
+}
+
+# Función para alertas altas
+alert_high() {
+    echo -e "${RED}🔴 [HIGH]${NC} $1"
+    ((HIGH++))
+}
+
+# Función para alertas medias
+alert_medium() {
+    echo -e "${YELLOW}🟡 [MEDIUM]${NC} $1"
+    ((MEDIUM++))
+}
+
+# Función para info
+info() {
+    echo -e "${GREEN}✅ ${NC} $1"
+}
+
+# ============================================
+# MOSTRAR BANNER
+# ============================================
+print_banner
+
+# ============================================
+# INFORMACIÓN BÁSICA
+# ============================================
+print_header "📋 INFORMACIÓN BÁSICA DEL SISTEMA"
+
+echo -e "${BLUE}👤 Usuario Actual:${NC}"
+whoami
+id
+echo ""
+
+echo -e "${BLUE}🖥️  Sistema Operativo:${NC}"
+uname -a
+echo ""
+
+echo -e "${BLUE}🔧 Kernel Versión:${NC}"
+uname -r
+echo ""
+
+if [ -f /etc/os-release ]; then
+    echo -e "${BLUE}🐧 Distribución:${NC}"
+    grep -E "^PRETTY_NAME|^NAME|^VERSION" /etc/os-release | head -3
+    echo ""
+fi
+
+# ============================================
+# FLAGS Y ARCHIVOS SENSIBLES - BÚSQUEDA RÁPIDA
+# ============================================
+print_header "🚩 FLAGS & ARCHIVOS SENSIBLES"
+
+echo -e "${LIME}Buscando flags y archivos interesantes...${NC}\n"
+
+# Buscar flags comunes
+FLAGS_FOUND=0
+for pattern in "user.txt" "root.txt" "flag.txt" "*flag*" "proof.txt" "secret.txt" "password.txt" ".flag" "FLAG"; do
+    FOUND=$(timeout 3 find /home /root /tmp /opt -maxdepth 3 -iname "$pattern" -type f 2>/dev/null | head -5)
+    if [ ! -z "$FOUND" ]; then
+        echo "$FOUND" | while read flag; do
+            SIZE=$(wc -c < "$flag" 2>/dev/null)
+            alert_critical "🚩 FLAG ENCONTRADA: $flag ($SIZE bytes)"
+            echo -e "${RED}   Contenido:${NC}"
+            head -3 "$flag" 2>/dev/null | sed 's/^/   /'
+            ((FLAGS_FOUND++))
+        done
+    fi
+done
+
+if [ $FLAGS_FOUND -eq 0 ]; then
+    info "No se encontraron flags (user.txt, root.txt, etc)"
+fi
+echo ""
+
+# ============================================
+# SUDO - EL VECTOR MÁS IMPORTANTE
+# ============================================
+print_header "🔐 SUDO - ANÁLISIS DE PERMISOS"
+
+echo -e "${BLUE}¿Puedo ejecutar comandos con sudo?${NC}"
+SUDO_OUTPUT=$(sudo -l 2>&1 <<< "" | grep -v "password" 2>/dev/null)
+if echo "$SUDO_OUTPUT" | grep -qE "NOPASSWD|ALL="; then
+    alert_critical "Sudo sin contraseña detectado:"
+    echo "$SUDO_OUTPUT" | grep -vE "^Matching|^User|Defaults|env_reset|password" | sed 's/^/  /'
+elif echo "$SUDO_OUTPUT" | grep -q "("; then
+    alert_high "Sudo disponible con estos permisos:"
+    echo "$SUDO_OUTPUT" | grep -vE "^Matching|^User|Defaults|env_reset|password" | sed 's/^/  /'
+else
+    info "No hay permisos de sudo (o requiere contraseña)"
+fi
+echo ""
+
+# ============================================
+# SUID BINARIES
+# ============================================
+print_header "💀 SUID BINARIES - POTENCIALES VECTORES"
+
+SUID_DANGEROUS="/usr/bin/sudo /usr/bin/su /usr/bin/passwd /bin/mount /bin/umount /usr/bin/chsh /usr/bin/chfn /usr/bin/newgrp /usr/bin/nmap /usr/bin/strace /usr/bin/ltrace /usr/bin/ld.so /bin/bash /bin/sh /bin/zsh /usr/bin/env /usr/bin/python /usr/bin/perl /usr/bin/ruby /usr/bin/less /usr/bin/more /usr/bin/ed /usr/bin/vi /usr/bin/vim /bin/nc /bin/netcat /usr/bin/wget /usr/bin/curl"
+
+echo -e "${BLUE}SUID Binaries (buscando en /usr, /bin, /sbin, /opt):${NC}"
+SUID_LIST=$(find /usr /bin /sbin /opt -perm -4000 -type f 2>/dev/null | sort)
+
+# Binarios CRÍTICOS (según GTFOBins)
+SUID_CRITICAL="/usr/bin/find /usr/bin/sudo /usr/bin/su /bin/bash /bin/sh /bin/zsh /usr/bin/env /usr/bin/nmap /usr/bin/strace /usr/bin/less /usr/bin/more /usr/bin/vi /usr/bin/vim /usr/bin/wget /usr/bin/curl /usr/bin/perl /usr/bin/python /usr/bin/python3 /usr/bin/ruby"
+
+# Binarios ALTOS (potencialmente peligrosos)
+SUID_DANGEROUS="/usr/bin/passwd /usr/bin/chsh /usr/bin/chfn /usr/bin/newgrp /usr/bin/pkexec /bin/mount /bin/umount"
+
+if [ -z "$SUID_LIST" ]; then
+    info "No se encontraron SUID binaries"
+else
+    while IFS= read -r binary; do
+        if echo "$SUID_CRITICAL" | grep -qw "$binary"; then
+            alert_critical "🚨 CRITICAL SUID (GTFOBins): $binary"
+        elif echo "$SUID_DANGEROUS" | grep -qw "$binary"; then
+            alert_high "SUID: $binary"
+        else
+            echo "  $binary"
+        fi
+    done <<< "$SUID_LIST"
+fi
+echo ""
+
+# ============================================
+# CAPABILITIES
+# ============================================
+print_header "⚡ CAPABILITIES - PERMISOS ESPECIALES"
+
+echo -e "${BLUE}Binarios con capabilities (excepto cap_net_bind_service):${NC}"
+if command -v getcap &> /dev/null; then
+    CAPS=$(getcap -r /usr /bin /sbin /opt 2>/dev/null | grep -v "cap_net_bind_service")
+else
+    CAPS=""
+fi
+
+if [ -z "$CAPS" ]; then
+    info "No se encontraron capabilities peligrosas"
+else
+    echo "$CAPS" | while read line; do
+        if echo "$line" | grep -qE "cap_setuid|cap_setgid|cap_sys_admin|cap_chown|cap_dac_override"; then
+            alert_high "$line"
+        else
+            echo "  $line"
+        fi
+    done
+fi
+echo ""
+
+# ============================================
+# CRON JOBS
+# ============================================
+print_header "⏰ CRON JOBS - TAREAS PROGRAMADAS"
+
+echo -e "${BLUE}Mi crontab:${NC}"
+CRON_OUTPUT=$(crontab -l 2>&1 <<< "" 2>/dev/null)
+if echo "$CRON_OUTPUT" | grep -qvE "no crontab|not allowed"; then
+    echo "$CRON_OUTPUT" | sed 's/^/  /'
+else
+    info "No hay crontab configurado"
+fi
+echo ""
+
+echo -e "${BLUE}Cron jobs del sistema (archivos escribibles):${NC}"
+for cronfile in /etc/cron.* /var/spool/cron/crontabs/*; do
+    if [ -f "$cronfile" ] 2>/dev/null && [ -w "$cronfile" ]; then
+        alert_high "ESCRIBIBLE: $cronfile"
+    fi
+done
+
+WRITABLE_CRON=$(find /etc/cron.* -writable 2>/dev/null)
+if [ -z "$WRITABLE_CRON" ]; then
+    info "No hay archivos de cron escribibles"
+fi
+echo ""
+
+# ============================================
+# PROCESOS EN EJECUCIÓN - INTERESANTES
+# ============================================
+print_header "⚙️  PROCESOS EN EJECUCIÓN - ANÁLISIS"
+
+echo -e "${BLUE}Procesos ejecutados por root (sin sistema):${NC}"
+ps aux | grep -E "^root" | grep -v "^\[" | grep -v "grep" | awk '{print $2, $NF}' | while read pid cmd; do
+    case "$cmd" in
+        *mysql*|*postgres*|*redis*|*mongodb*|*elasticsearch*)
+            alert_high "Database/Cache: $cmd"
+            ;;
+        *http*|*nginx*|*apache*|*tomcat*)
+            alert_medium "Web Service: $cmd"
+            ;;
+        *ssh*|*openssh*)
+            info "SSH: $cmd"
+            ;;
+        *)
+            echo "  $pid: $cmd"
+            ;;
+    esac
+done
+echo ""
+
+# ============================================
+# PUERTOS ABIERTOS
+# ============================================
+print_header "🌐 PUERTOS ABIERTOS - SERVICIOS ESCUCHANDO"
+
+echo -e "${BLUE}Puertos listening (netstat/ss):${NC}"
+if command -v ss &> /dev/null; then
+    ss -tlnp 2>/dev/null | grep LISTEN | awk '{print $4, $7}' | sort | uniq | while read port service; do
+        case "$port" in
+            *:22*)
+                info "SSH: $port"
+                ;;
+            *:80*|*:443*|*:8080*|*:8443*|*:3000*|*:5000*)
+                alert_medium "Web: $port - $service"
+                ;;
+            *:3306*|*:5432*|*:27017*|*:6379*)
+                alert_high "Database/Cache: $port - $service"
+                ;;
+            127.0.0.1*|localhost*)
+                echo "  Localhost: $port"
+                ;;
+            *)
+                echo "  $port - $service"
+                ;;
+        esac
+    done
+elif command -v netstat &> /dev/null; then
+    netstat -tlnp 2>/dev/null | grep LISTEN | awk '{print $4, $NF}' | sort | uniq
+fi
+echo ""
+
+# ============================================
+# ARCHIVOS SENSIBLES - PERMISOS DÉBILES
+# ============================================
+print_header "🔒 ARCHIVOS SENSIBLES - PERMISOS DÉBILES"
+
+echo -e "${BLUE}Archivos críticos con permisos cuestionables:${NC}"
+
+SENSITIVE_FILES=(
+    "/etc/passwd"
+    "/etc/shadow"
+    "/etc/sudoers"
+    "/etc/sudoers.d"
+    "/root/.ssh"
+    "/home"
+    "/var/www"
+    "/opt"
+)
+
+for file in "${SENSITIVE_FILES[@]}"; do
+    if [ -e "$file" ]; then
+        PERMS=$(ls -ld "$file" | awk '{print $1}')
+        if [ -w "$file" ]; then
+            alert_high "ESCRIBIBLE: $file ($PERMS)"
+        fi
+        if echo "$PERMS" | grep -qE "..r.*r.*"; then
+            if [[ "$file" == *"shadow"* ]] || [[ "$file" == *"sudoers"* ]]; then
+                alert_high "LEGIBLE: $file (readable!)"
+            fi
+        fi
+    fi
+done
+echo ""
+
+# ============================================
+# VARIABLES DE ENTORNO INTERESANTES
+# ============================================
+print_header "🌍 VARIABLES DE ENTORNO - POSIBLES CREDENCIALES"
+
+echo -e "${BLUE}Variables con valores sensibles:${NC}"
+env | grep -iE "pass|pwd|key|secret|token|api|user|cred|db_|mysql|postgres|mongo" | while read var; do
+    alert_medium "ENV VAR: $var"
+done
+echo ""
+
+# ============================================
+# USUARIOS DEL SISTEMA
+# ============================================
+print_header "👥 USUARIOS DEL SISTEMA"
+
+echo -e "${BLUE}Usuarios con shell (sin system users):${NC}"
+awk -F: '$7 ~ /bin\/(bash|sh|zsh|fish)/ {print $1 " (UID: " $3 ")"}' /etc/passwd | while read user; do
+    if [[ "$user" == *UID:\ 0* ]]; then
+        alert_high "ROOT USER: $user"
+    else
+        echo "  $user"
+    fi
+done
+echo ""
+
+echo -e "${BLUE}Usuarios en /home:${NC}"
+ls -la /home 2>/dev/null | grep "^d" | awk '{print $NF}' | grep -v "^$" | while read user; do
+    echo "  $user"
+    if [ -d "/home/$user/.ssh" ]; then
+        echo "    └─ SSH keys encontradas"
+    fi
+done
+echo ""
+
+# ============================================
+# MONTAJES - PERMISO DE MONTAJE
+# ============================================
+print_header "📦 MONTAJES - PERMISOS DE MONTAJE"
+
+echo -e "${BLUE}Montajes actuales:${NC}"
+mount | grep -v "^cgroup" | while read mount; do
+    if echo "$mount" | grep -qE "noexec|nodev|nosuid"; then
+        info "Montado seguro: $mount"
+    elif echo "$mount" | grep -qE "ext4|btrfs|xfs"; then
+        echo "  $mount"
+    fi
+done
+echo ""
+
+# ============================================
+# FSTAB - CONFIGURACIÓN DE MONTAJES
+# ============================================
+print_header "📄 FSTAB - ANÁLISIS DE CONFIGURACIÓN"
+
+echo -e "${BLUE}Líneas interesantes en /etc/fstab:${NC}"
+if [ -f /etc/fstab ]; then
+    grep -v "^#" /etc/fstab | grep -v "^$" | while read line; do
+        if echo "$line" | grep -qE "noexec|nodev|nosuid"; then
+            info "Seguro: $line"
+        elif echo "$line" | grep -qE "defaults"; then
+            echo "  $line"
+        fi
+    done
+fi
+echo ""
+
+# ============================================
+# SERVICIOS - ANÁLISIS
+# ============================================
+print_header "🔧 SERVICIOS SYSTEMD - ANÁLISIS"
+
+echo -e "${BLUE}Servicios activos (user-relevant):${NC}"
+systemctl list-units --type=service --state=running 2>/dev/null | grep -E "mysql|postgres|redis|mongo|http|nginx|apache|ftp|ssh|smb" | awk '{print $1}' | sed 's/\.service$//' | while read service; do
+    case "$service" in
+        *ssh*)
+            info "SSH: $service"
+            ;;
+        *http*|*nginx*|*apache*|*web*)
+            alert_medium "Web: $service"
+            ;;
+        *mysql*|*postgres*|*mongo*|*redis*)
+            alert_high "Database/Cache: $service"
+            ;;
+        *)
+            echo "  $service"
+            ;;
+    esac
+done
+echo ""
+
+# ============================================
+# HISTORIAL - CREDENCIALES EN COMANDOS
+# ============================================
+print_header "📜 HISTORIAL - BÚSQUEDA DE CREDENCIALES"
+
+echo -e "${BLUE}Archivos de historial encontrados:${NC}"
+HISTORY_FILES=(
+    ~/.bash_history
+    ~/.zsh_history
+    ~/.fish_history
+    ~/.sh_history
+    ~/.history
+)
+
+for hfile in "${HISTORY_FILES[@]}"; do
+    if [ -f "$hfile" ]; then
+        CREDS=$(grep -iE "password|passwd|pwd|pass=|secret|api.?key|token=" "$hfile" 2>/dev/null | head -3)
+        if [ ! -z "$CREDS" ]; then
+            alert_high "Potenciales credenciales en: $hfile"
+            echo "$CREDS" | sed 's/^/    /' | head -3
+        else
+            info "Revisado: $hfile (sin credenciales obvias)"
+        fi
+    fi
+done
+echo ""
+
+# ============================================
+# ARCHIVOS INTERESANTES - BÚSQUEDA PROFUNDA
+# ============================================
+print_header "🎯 ARCHIVOS INTERESANTES - BÚSQUEDA PROFUNDA"
+
+echo -e "${BLUE}Buscando archivos de configuración (con timeout):${NC}"
+CONFIG_PATTERNS=(".env" ".env.local" ".env.production" "config.php" "config.js" "settings.py" "database.yml" "secrets.yml" "credentials")
+
+for pattern in "${CONFIG_PATTERNS[@]}"; do
+    FOUND=$(timeout 5 find /home /opt /var/www /srv -name "$pattern" -type f 2>/dev/null | head -5)
+    if [ ! -z "$FOUND" ]; then
+        while IFS= read -r file; do
+            alert_high "CONFIG: $file"
+        done <<< "$FOUND"
+    fi
+done
+echo ""
+
+echo -e "${BLUE}Archivos con extensiones sospechosas:${NC}"
+SUSPICIOUS_EXTS=("*.sql" "*.db" "*.sqlite" "*.sqlite3" "*.bak" "*.backup" "*.old")
+for ext in "${SUSPICIOUS_EXTS[@]}"; do
+    FOUND=$(timeout 3 find /home /opt /var/www /srv -name "$ext" -type f 2>/dev/null | head -3)
+    if [ ! -z "$FOUND" ]; then
+        while IFS= read -r file; do
+            alert_medium "ARCHIVO: $file"
+        done <<< "$FOUND"
+    fi
+done
+echo ""
+
+echo -e "${BLUE}Buscando en directorios comunes:${NC}"
+for dir in /opt /srv /var/www; do
+    if [ -d "$dir" ]; then
+        INTERESTING=$(timeout 3 find "$dir" -maxdepth 2 \( -name "*.env" -o -name "config*" -o -name "*secret*" \) -type f 2>/dev/null | head -3)
+        if [ ! -z "$INTERESTING" ]; then
+            echo -e "${YELLOW}En $dir:${NC}"
+            echo "$INTERESTING" | sed 's/^/  /'
+        fi
+    fi
+done
+echo ""
+
+echo -e "${BLUE}Buscando credenciales hardcodeadas en archivos:${NC}"
+# Buscar en archivos comunes con timeout
+for searchdir in /home /opt /var/www; do
+    if [ -d "$searchdir" ]; then
+        CREDS=$(timeout 10 find "$searchdir" -maxdepth 3 -type f \( -name "*.php" -o -name "*.py" -o -name "*.js" -o -name "*.env" \) 2>/dev/null | \
+                xargs grep -l -iE "password\s*=|api_key|secret_key" 2>/dev/null | head -5)
+        if [ ! -z "$CREDS" ]; then
+            echo "$CREDS" | while read file; do
+                alert_high "CREDENCIALES EN: $file"
+                grep -n -iE "password|api_key|secret_key" "$file" 2>/dev/null | head -1 | sed 's/^/    /'
+            done
+        fi
+    fi
+done
+echo ""
+
+# ============================================
+# BASES DE DATOS - BÚSQUEDA
+# ============================================
+print_header "🗄️  BASES DE DATOS - BÚSQUEDA Y CREDENCIALES"
+
+echo -e "${BLUE}Archivos de base de datos encontrados:${NC}"
+DB_EXTENSIONS=("*.db" "*.sqlite" "*.sqlite3" "*.sql")
+for ext in "${DB_EXTENSIONS[@]}"; do
+    FOUND=$(timeout 5 find /home /opt /var/www /tmp -name "$ext" -type f 2>/dev/null | head -5)
+    if [ ! -z "$FOUND" ]; then
+        echo "$FOUND" | while read dbfile; do
+            SIZE=$(du -h "$dbfile" 2>/dev/null | cut -f1 || echo "?")
+            alert_medium "DATABASE: $dbfile ($SIZE)"
+        done
+    fi
+done
+echo ""
+
+echo -e "${BLUE}Archivos de configuración de base de datos:${NC}"
+DB_CONFIGS=(
+    "/etc/mysql/my.cnf"
+    "/etc/postgresql/postgresql.conf"
+    "/etc/mongodb.conf"
+    "/etc/redis.conf"
+    "~/.my.cnf"
+    "~/.pgpass"
+)
+
+for config in "${DB_CONFIGS[@]}"; do
+    config_expanded="${config/#~/$HOME}"
+    if [ -f "$config_expanded" ] 2>/dev/null; then
+        alert_high "DB CONFIG: $config_expanded"
+        grep -E "password|user|host" "$config_expanded" 2>/dev/null | sed 's/^/    /'
+    fi
+done
+echo ""
+
+# MySQL credentials
+echo -e "${BLUE}Credenciales de MySQL en archivos:${NC}"
+MYSQL_CREDS=$(find /home /var/www /opt -type f \( -name "*.php" -o -name "*.conf" -o -name "*.cnf" \) 2>/dev/null | \
+              xargs grep -h -iE "mysql_connect|mysqli|PDO.*mysql" 2>/dev/null | head -5)
+if [ ! -z "$MYSQL_CREDS" ]; then
+    alert_high "Conexiones MySQL encontradas"
+    echo "$MYSQL_CREDS" | sed 's/^/  /'
+fi
+echo ""
+
+# ============================================
+# GIT REPOSITORIES - INFORMACIÓN SENSIBLE
+# ============================================
+print_header "🔱 GIT REPOSITORIES - BÚSQUEDA DE SECRETOS"
+
+echo -e "${BLUE}Repositorios Git encontrados:${NC}"
+GIT_REPOS=$(timeout 5 find /home /opt /var/www -maxdepth 3 -name ".git" -type d 2>/dev/null | head -5)
+if [ ! -z "$GIT_REPOS" ]; then
+    echo "$GIT_REPOS" | while read gitdir; do
+        repo_dir=$(dirname "$gitdir")
+        alert_medium "GIT REPO: $repo_dir"
+
+        # Buscar .env en git
+        if timeout 2 git -C "$repo_dir" ls-files 2>/dev/null | grep -q ".env"; then
+            alert_high "  └─ .env está tracked en git!"
+        fi
+    done
+else
+    info "No se encontraron repositorios git"
+fi
+echo ""
+
+# ============================================
+# APLICACIONES WEB - ANÁLISIS
+# ============================================
+print_header "🌐 APLICACIONES WEB - ANÁLISIS"
+
+echo -e "${BLUE}Directorios web encontrados:${NC}"
+WEB_DIRS=("/var/www" "/home/*/public_html" "/opt/*/public" "/home/*/www" "/srv/www")
+for webdir in "${WEB_DIRS[@]}"; do
+    if ls -d $webdir 2>/dev/null | grep -q "/"; then
+        echo "  $(ls -d $webdir 2>/dev/null)"
+    fi
+done
+echo ""
+
+echo -e "${BLUE}Frameworks web detectados:${NC}"
+# WordPress
+if find /var/www /home -name "wp-config.php" 2>/dev/null | head -1; then
+    alert_medium "WordPress detectado"
+    WP_CONFIG=$(find /var/www /home -name "wp-config.php" 2>/dev/null | head -1)
+    if [ ! -z "$WP_CONFIG" ]; then
+        grep -E "DB_NAME|DB_USER|DB_PASSWORD|DB_HOST" "$WP_CONFIG" 2>/dev/null | sed 's/^/  /'
+    fi
+fi
+
+# Laravel
+if find /var/www /home -name ".env" 2>/dev/null | xargs grep -l "APP_NAME=Laravel" 2>/dev/null | head -1; then
+    alert_medium "Laravel detectado"
+fi
+
+# Django
+if find /var/www /home -name "settings.py" 2>/dev/null | xargs grep -l "INSTALLED_APPS" 2>/dev/null | head -1; then
+    alert_medium "Django detectado"
+fi
+
+# Symfony
+if find /var/www /home -name "composer.json" 2>/dev/null | xargs grep -l "symfony" 2>/dev/null | head -1; then
+    alert_medium "Symfony detectado"
+fi
+echo ""
+
+# ============================================
+# ARCHIVOS DE BACKUP
+# ============================================
+print_header "💾 ARCHIVOS DE BACKUP - POTENCIAL DE DATOS"
+
+echo -e "${BLUE}Archivos de backup encontrados:${NC}"
+BACKUP_PATTERNS=("*.bak" "*.backup" "*.old" "*.zip" "*.tar.gz" "*.tar")
+BACKUP_COUNT=0
+
+for pattern in "${BACKUP_PATTERNS[@]}"; do
+    FOUND=$(timeout 3 find /home /opt /var/www -maxdepth 2 -name "$pattern" -type f 2>/dev/null | head -3)
+    if [ ! -z "$FOUND" ]; then
+        echo "$FOUND" | while read backup; do
+            alert_medium "BACKUP: $backup"
+            ((BACKUP_COUNT++))
+        done
+    fi
+done
+
+if [ $BACKUP_COUNT -eq 0 ]; then
+    info "No se encontraron backups obvios"
+fi
+echo ""
+
+# ============================================
+# DOCKER - ANÁLISIS
+# ============================================
+print_header "🐳 DOCKER - CONFIGURACIÓN Y SECRETOS"
+
+echo -e "${BLUE}Docker status:${NC}"
+if command -v docker &> /dev/null; then
+    if docker ps 2>/dev/null; then
+        alert_medium "Docker disponible y corriendo"
+        docker ps 2>/dev/null | sed 's/^/  /'
+    else
+        info "Docker instalado pero no corriendo"
+    fi
+else
+    info "Docker no instalado"
+fi
+echo ""
+
+echo -e "${BLUE}Archivos de configuración de Docker:${NC}"
+DOCKER_CONFIGS=(
+    ~/.docker/config.json
+    /etc/docker/daemon.json
+    ~/.dockercfg
+)
+
+for config in "${DOCKER_CONFIGS[@]}"; do
+    config_expanded="${config/#~/$HOME}"
+    if [ -f "$config_expanded" ]; then
+        alert_high "DOCKER CONFIG: $config_expanded"
+        cat "$config_expanded" 2>/dev/null | sed 's/^/  /'
+    fi
+done
+echo ""
+
+# ============================================
+# ARCHIVOS EJECUTABLES EN DIRECTORIOS RAROS
+# ============================================
+print_header "⚔️  EJECUTABLES EN DIRECTORIOS SOSPECHOSOS"
+
+echo -e "${BLUE}Binarios custom ejecutables:${NC}"
+CUSTOM_BINS=$(timeout 3 find /home /opt -maxdepth 2 -perm /111 -type f 2>/dev/null | grep -v "\.git" | head -5)
+if [ ! -z "$CUSTOM_BINS" ]; then
+    echo "$CUSTOM_BINS" | while read bin; do
+        alert_medium "EXECUTABLE: $bin"
+    done
+else
+    info "No se encontraron binarios custom"
+fi
+echo ""
+
+# ============================================
+# ARCHIVOS CON PERMISOS ESPECIALES
+# ============================================
+print_header "🛡️  ARCHIVOS CON PERMISOS ESPECIALES"
+
+echo -e "${BLUE}Archivos SGID en /home:${NC}"
+SGID=$(find /home -perm -2000 -type f 2>/dev/null)
+if [ ! -z "$SGID" ]; then
+    echo "$SGID" | sed 's/^/  /'
+else
+    info "No se encontraron archivos SGID"
+fi
+echo ""
+
+echo -e "${BLUE}Archivos con sticky bit:${NC}"
+STICKY=$(find /home -perm -1000 -type f 2>/dev/null | head -5)
+if [ ! -z "$STICKY" ]; then
+    echo "$STICKY" | sed 's/^/  /'
+else
+    info "No se encontraron archivos con sticky bit"
+fi
+echo ""
+
+# ============================================
+# BÚSQUEDA DE PALABRAS CLAVE SENSIBLES
+# ============================================
+print_header "🔍 PALABRAS CLAVE SENSIBLES EN ARCHIVOS"
+
+echo -e "${BLUE}Buscando palabras clave peligrosas:${NC}"
+KEYWORDS=("password=" "api_key=" "secret_key=")
+
+for keyword in "${KEYWORDS[@]}"; do
+    FOUND=$(timeout 5 find /home /opt /var/www -maxdepth 2 -type f \( -name "*.py" -o -name "*.php" -o -name "*.js" -o -name "*.env" \) 2>/dev/null | \
+            xargs grep -l "$keyword" 2>/dev/null | head -2)
+    if [ ! -z "$FOUND" ]; then
+        echo "$FOUND" | while read file; do
+            alert_high "KEYWORD '$keyword': $file"
+        done
+    fi
+done
+echo ""
+
+# ============================================
+# ARCHIVOS MÁS SENSIBLES - BÚSQUEDA COMPLETA
+# ============================================
+print_header "⚠️  ARCHIVOS SENSIBLES - BÚSQUEDA COMPLETA"
+
+echo -e "${LIME}Buscando archivos con información sensible...${NC}\n"
+
+# Patrones de archivos sensibles
+SENSITIVE_PATTERNS=(
+    "user.txt"
+    "root.txt"
+    "flag.txt"
+    "proof.txt"
+    ".env"
+    "id_rsa"
+    "id_ed25519"
+    "private_key"
+    "password*"
+    "credentials*"
+    "secrets*"
+    ".aws*"
+    "config.php"
+    "wp-config.php"
+    "database.yml"
+    "settings.py"
+)
+
+echo -e "${BOLD}Archivos Encontrados:${NC}"
+SENSITIVE_COUNT=0
+
+for pattern in "${SENSITIVE_PATTERNS[@]}"; do
+    FOUND=$(timeout 2 find /home /root /opt /var/www /tmp -maxdepth 3 -iname "$pattern" -type f 2>/dev/null | head -3)
+    if [ ! -z "$FOUND" ]; then
+        echo "$FOUND" | while read sfile; do
+            if [[ "$sfile" == *"user.txt"* ]] || [[ "$sfile" == *"root.txt"* ]] || [[ "$sfile" == *"flag"* ]]; then
+                alert_critical "🚩 FLAG/PRIZE: $sfile"
+                ((SENSITIVE_COUNT++))
+            elif [[ "$sfile" == *"id_rsa"* ]] || [[ "$sfile" == *"private_key"* ]]; then
+                alert_high "🔑 PRIVATE KEY: $sfile"
+                ((SENSITIVE_COUNT++))
+            elif [[ "$sfile" == *".env"* ]] || [[ "$sfile" == *"password"* ]] || [[ "$sfile" == *"config"* ]]; then
+                alert_high "⚙️  CONFIG/CREDENTIALS: $sfile"
+                ((SENSITIVE_COUNT++))
+            else
+                alert_medium "📄 SENSITIVE: $sfile"
+                ((SENSITIVE_COUNT++))
+            fi
+        done
+    fi
+done
+
+if [ $SENSITIVE_COUNT -eq 0 ]; then
+    info "No se encontraron archivos sensibles obvios"
+fi
+echo ""
+
+# ============================================
+# SSH KEYS Y AUTHORIZED_KEYS
+# ============================================
+print_header "🔑 SSH KEYS - ANÁLISIS COMPLETO"
+
+echo -e "${BLUE}SSH keys en el sistema:${NC}"
+SSH_KEYS=$(timeout 3 find /home /root -maxdepth 3 \( -name "id_*" -o -name "*_rsa" -o -name "*_ed25519" \) 2>/dev/null | grep -v ".pub" | head -10)
+if [ ! -z "$SSH_KEYS" ]; then
+    echo "$SSH_KEYS" | while read key; do
+        if [ -f "$key" ]; then
+            alert_high "SSH KEY: $key"
+        fi
+    done
+else
+    info "No se encontraron SSH keys privadas"
+fi
+echo ""
+
+echo -e "${BLUE}authorized_keys encontrados:${NC}"
+AUTH_KEYS=$(find /home /root -name "authorized_keys" 2>/dev/null)
+if [ ! -z "$AUTH_KEYS" ]; then
+    echo "$AUTH_KEYS" | while read authkey; do
+        COUNT=$(wc -l < "$authkey")
+        alert_medium "authorized_keys: $authkey ($COUNT keys)"
+    done
+else
+    info "No se encontraron authorized_keys"
+fi
+echo ""
+
+# ============================================
+# APLICACIONES ESPECIALES
+# ============================================
+print_header "🎪 APLICACIONES ESPECIALES - BÚSQUEDA"
+
+echo -e "${BLUE}Aplicaciones potencialmente explotables:${NC}"
+SPECIAL_APPS=("tomcat" "jboss" "jenkins" "sonarqube" "elasticsearch" "kibana" "grafana" "prometheus" "vault" "consul")
+
+for app in "${SPECIAL_APPS[@]}"; do
+    if ps aux | grep -i "$app" | grep -v grep > /dev/null; then
+        alert_high "APLICACIÓN: $app ejecutándose"
+    elif command -v $app &> /dev/null; then
+        alert_medium "APLICACIÓN: $app instalada"
+    fi
+done
+echo ""
+
+# ============================================
+# ARCHIVOS TEMPORALES Y LOGS
+# ============================================
+print_header "📋 ARCHIVOS TEMPORALES Y LOGS"
+
+echo -e "${BLUE}Archivos interesantes en /tmp:${NC}"
+TMP_INTERESTING=$(timeout 2 find /tmp -maxdepth 1 -type f \( -name "*.log" -o -name "*credentials*" -o -name "*password*" \) 2>/dev/null | head -5)
+if [ ! -z "$TMP_INTERESTING" ]; then
+    echo "$TMP_INTERESTING" | while read tmpfile; do
+        alert_high "TEMP FILE: $tmpfile"
+    done
+else
+    info "No hay archivos interesantes en /tmp"
+fi
+echo ""
+
+echo -e "${BLUE}Logs con información sensible:${NC}"
+LOG_CREDS=$(timeout 5 find /var/log -maxdepth 1 -type f -name "*.log" 2>/dev/null | \
+            xargs grep -l -i "password\|error" 2>/dev/null | head -3)
+if [ ! -z "$LOG_CREDS" ]; then
+    echo "$LOG_CREDS" | while read logfile; do
+        alert_medium "LOG: $logfile (contiene info sensible)"
+    done
+else
+    info "No se encontraron logs con credenciales obvias"
+fi
+echo ""
+
+# ============================================
+# ARCHIVOS SSH
+# ============================================
+print_header "SSH - ANÁLISIS DE KEYS"
+
+echo -e "${BLUE}Directorio SSH del usuario:${NC}"
+if [ -d ~/.ssh ]; then
+    if [ -f ~/.ssh/id_rsa ] || [ -f ~/.ssh/id_ed25519 ]; then
+        alert_medium "Claves privadas SSH encontradas en ~/.ssh"
+        ls -la ~/.ssh/ | grep "id_" | sed 's/^/  /'
+    fi
+    if [ -f ~/.ssh/authorized_keys ]; then
+        alert_medium "authorized_keys encontrado:"
+        wc -l ~/.ssh/authorized_keys | awk '{print "  " $1 " keys autorizadas"}'
+    fi
+else
+    info "No hay directorio ~/.ssh"
+fi
+echo ""
+
+# ============================================
+# ARCHIVOS WORLD-WRITABLE
+# ============================================
+print_header "ARCHIVOS WORLD-WRITABLE - RIESGOS"
+
+echo -e "${BLUE}Archivos world-writable en directorios críticos:${NC}"
+CRITICAL_DIRS="/tmp /var/tmp /opt"
+for dir in $CRITICAL_DIRS; do
+    if [ -d "$dir" ]; then
+        WRITABLE=$(timeout 2 find "$dir" -maxdepth 1 -perm -002 -type f 2>/dev/null | head -3)
+        if [ ! -z "$WRITABLE" ]; then
+            alert_high "World-writable en $dir:"
+            echo "$WRITABLE" | sed 's/^/  /'
+        fi
+    fi
+done
+echo ""
+
+# ============================================
+# KERNEL EXPLOITS
+# ============================================
+print_header "💥 KERNEL - POTENCIAL DE EXPLOITS"
+
+echo -e "${BLUE}Versión del Kernel:${NC}"
+KERNEL_VERSION=$(uname -r)
+echo "  $KERNEL_VERSION"
+echo ""
+
+echo -e "${BLUE}Verificaciones de protecciones del kernel:${NC}"
+if [ -f /proc/sys/kernel/unprivileged_userns_clone ]; then
+    VALUE=$(cat /proc/sys/kernel/unprivileged_userns_clone)
+    if [ "$VALUE" = "1" ]; then
+        alert_high "Unprivileged namespaces enabled (posible CVE-2016-5195)"
+    fi
+fi
+
+if [ -f /proc/sys/kernel/kptr_restrict ]; then
+    VALUE=$(cat /proc/sys/kernel/kptr_restrict)
+    if [ "$VALUE" = "0" ]; then
+        alert_medium "kptr_restrict disabled"
+    fi
+fi
+
+if [ -f /proc/sys/kernel/yama/ptrace_scope ]; then
+    VALUE=$(cat /proc/sys/kernel/yama/ptrace_scope)
+    if [ "$VALUE" = "0" ]; then
+        alert_medium "ptrace sin restricciones"
+    fi
+fi
+echo ""
+
+# ============================================
+# RESUMEN FINAL
+# ============================================
+print_header "📊 RESUMEN DE HALLAZGOS"
+
+echo -e "\n${PINK}╔════════════════════════════════════════╗${NC}"
+echo -e "${RED}│  ⛔  CRÍTICOS:       $CRITICAL${NC}${PINK}              │${NC}"
+echo -e "${ORANGE}│  🔥  ALTOS:         $HIGH${NC}${PINK}               │${NC}"
+echo -e "${YELLOW}│  ⚠️   MEDIOS:        $MEDIUM${NC}${PINK}              │${NC}"
+echo -e "${PINK}╚════════════════════════════════════════╝${NC}"
+echo ""
+
+if [ $CRITICAL -gt 0 ]; then
+    echo -e "${RED}╔════════════════════════════════════════╗${NC}"
+    echo -e "${RED}║ 🚨 ¡VULNERABILIDADES CRÍTICAS! 🚨      ║${NC}"
+    echo -e "${RED}╚════════════════════════════════════════╝${NC}"
+elif [ $HIGH -gt 0 ]; then
+    echo -e "${ORANGE}╔════════════════════════════════════════╗${NC}"
+    echo -e "${ORANGE}║ 🔥 VECTORES DE ESCALACIÓN DETECTADOS   ║${NC}"
+    echo -e "${ORANGE}╚════════════════════════════════════════╝${NC}"
+else
+    echo -e "${LIME}╔════════════════════════════════════════╗${NC}"
+    echo -e "${LIME}║ ✨ Sistema Bien Configurado ✨         ║${NC}"
+    echo -e "${LIME}╚════════════════════════════════════════╝${NC}"
+fi
+
+echo ""
+echo -e "${PINK}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "${BOLD}${MAGENTA}📋 PRÓXIMOS PASOS:${NC}"
+echo -e "${CYAN}   ① Investigar hallazgos CRÍTICOS/ALTOS${NC}"
+echo -e "${CYAN}   ② Probar técnicas de escalación${NC}"
+echo -e "${CYAN}   ③ Revisar misconfigurations de apps${NC}"
+echo -e "${CYAN}   ④ Análisis de logs: /var/log/auth.log${NC}"
+echo -e "${CYAN}   ⑤ Explorar archivos interesantes${NC}"
+echo -e "${PINK}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+echo -e "\n${LIME}✨ Escaneo completado con NEXPEAS 🐢${NC}\n"

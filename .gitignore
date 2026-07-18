@@ -1,0 +1,137 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.pytest_cache/
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# OS specific
+.DS_Store
+Thumbs.db
+
+# Logs and reports
+*.log
+nexpeas_report*.txt
+scan_*.txt
+*.tmp
+
+# Sensitive files
+credentials.txt
+passwords.txt
+secrets.txt
+.env
+.env.local
+
+# Test output
+test_output/
+test_results/
+
+# Archives
+*.tar.gz
+*.zip
+*.rar
+*.7z
+
+# Backups
+*.bak
+*.backup
+*.old
+*~
+
+# Local development
+.local/
+/tmp/
+/temp/
+
+# SSH keys (NEVER commit these!)
+id_rsa
+id_rsa.pub
+id_ed25519
+id_ed25519.pub
+*.pem
+
+# Compiled scripts
+*.pyc
+*.pyo
+
+# Temporary files
+.tmp/
+.temp/
+temp/
+tmp/
+
+# Generated documentation
+docs/_build/
+site/
+
+# Dependency management
+poetry.lock
+Pipfile.lock
+
+# Editor temporary files
+.*.swp
+.*.swo
+*~
+.#*
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
