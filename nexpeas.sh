@@ -49,7 +49,6 @@ MEDIUM=0
 
 # Banner
 print_banner() {
-    clear
     echo -e "${PINK}"
     cat << "EOF"
     ╔════════════════════════════════════════════════╗
@@ -441,6 +440,205 @@ print_header "🌍 VARIABLES DE ENTORNO - POSIBLES CREDENCIALES"
 echo -e "${BLUE}Variables con valores sensibles:${NC}"
 env | grep -iE "pass|pwd|key|secret|token|api|user|cred|db_|mysql|postgres|mongo" | while read var; do
     alert_medium "ENV VAR: $var"
+done
+echo ""
+
+# ============================================
+# ARCHIVOS DE CONFIGURACIÓN Y SECRETOS
+# ============================================
+print_header "📂 ARCHIVOS DE CONFIGURACIÓN & SECRETOS - BÚSQUEDA EXHAUSTIVA"
+
+echo -e "${BLUE}Archivos de configuración encontrados (en directorio actual y /tmp):${NC}"
+
+# Lista exhaustiva de patrones a buscar
+CONFIG_PATTERNS=(
+    # Docker/Contenedores
+    ".dockerenv"
+    "/.dockerenv"
+    ".docker/config.json"
+    "docker-compose.yml"
+    "docker-compose.yaml"
+    "Dockerfile"
+
+    # Environment & Secretos
+    ".env"
+    ".env.local"
+    ".env.*.local"
+    ".env.production"
+    ".env.staging"
+    "*.env"
+    ".secrets"
+    ".credentials"
+    "credentials.json"
+    "secrets.json"
+
+    # Aplicaciones Web
+    "config.php"
+    "wp-config.php"
+    "wp-settings.php"
+    "settings.py"
+    "settings.json"
+    "config.json"
+    "config.yaml"
+    "config.yml"
+    "app.config"
+    ".htaccess"
+    "web.config"
+    "nginx.conf"
+    "apache2.conf"
+
+    # Node.js
+    "package.json"
+    "package-lock.json"
+    "yarn.lock"
+    ".npmrc"
+    ".yarnrc"
+    ".npm-rc"
+
+    # Python
+    "requirements.txt"
+    "setup.py"
+    "setup.cfg"
+    "pyproject.toml"
+    ".python-version"
+    "Pipfile"
+    "Pipfile.lock"
+    "tox.ini"
+
+    # Ruby
+    "Gemfile"
+    "Gemfile.lock"
+    ".ruby-version"
+
+    # Java/Maven
+    "pom.xml"
+    "build.gradle"
+    "settings.xml"
+
+    # Bases de Datos
+    ".sqlite"
+    "*.db"
+    "*.sqlite"
+    "*.sqlite3"
+    "database.yml"
+    "database.json"
+
+    # SSH & Keys
+    ".ssh/authorized_keys"
+    ".ssh/id_rsa"
+    ".ssh/id_ed25519"
+    ".ssh/config"
+    ".ssh/known_hosts"
+    "*.pem"
+    "*.key"
+    "*.pub"
+
+    # Git & Versioning
+    ".git/config"
+    ".gitconfig"
+    ".github/workflows"
+    ".gitlab-ci.yml"
+    ".travis.yml"
+
+    # Backups & Dumps
+    "*.bak"
+    "*.backup"
+    "*.sql"
+    "*.sql.gz"
+    "dump.sql"
+    "backup.tar"
+    "*.tar.gz"
+    "*.zip"
+
+    # Logging & Temp
+    ".log"
+    "*.log"
+    ".tmp"
+
+    # Cloud & APIs
+    ".aws/credentials"
+    ".aws/config"
+    ".gcloud"
+    "google-credentials.json"
+    ".azure"
+    ".vault-token"
+)
+
+FOUND_CONFIGS=0
+
+# Buscar en directorios clave
+SEARCH_DIRS=(
+    "."
+    ".."
+    "/tmp"
+    "/home/$USER"
+    "/home/*"
+    "/opt"
+    "/var/www"
+    "/var/www/html"
+    "/srv"
+    "/root"
+    "~"
+)
+
+for pattern in "${CONFIG_PATTERNS[@]}"; do
+    # Búsqueda rápida sin recursión profunda
+    FOUND=$(find ${SEARCH_DIRS[@]} -name "$pattern" -type f 2>/dev/null | head -5)
+    if [ ! -z "$FOUND" ]; then
+        echo "$FOUND" | while read file; do
+            if [ -f "$file" ] 2>/dev/null; then
+                SIZE=$(du -h "$file" 2>/dev/null | awk '{print $1}')
+                LINES=$(wc -l < "$file" 2>/dev/null || echo "?")
+
+                if [[ "$file" == *".env"* ]] || [[ "$file" == *"secret"* ]] || [[ "$file" == *"credential"* ]] || [[ "$file" == *"config.php"* ]] || [[ "$file" == *"wp-config"* ]]; then
+                    alert_high "🔑 CONFIGURATION FOUND: $file ($SIZE, $LINES líneas)"
+                    # Mostrar primeras líneas sin valores reales
+                    grep -E "^[A-Z_]+=" "$file" 2>/dev/null | head -3 | sed 's/=.*/=***/' | sed 's/^/    /' || true
+                elif [[ "$file" == *".dockerenv"* ]]; then
+                    alert_critical "🐳 DOCKER CONTAINER DETECTED: $file"
+                else
+                    echo "  📄 $file ($SIZE)"
+                fi
+                ((FOUND_CONFIGS++))
+            fi
+        done
+    fi
+done
+
+if [ $FOUND_CONFIGS -eq 0 ]; then
+    info "No configuration files found in common locations"
+fi
+echo ""
+
+# ============================================
+# ARCHIVOS ESPECIALES DEL SISTEMA
+# ============================================
+echo -e "${BLUE}Archivos especiales del sistema:${NC}"
+
+SPECIAL_FILES=(
+    "/.dockerenv:Docker Container"
+    "/.singularity:Singularity Container"
+    "/proc/vz/veinfo:OpenVZ Container"
+    "/cgroup:cgroup Detection"
+    "/sys/hypervisor/type:Hypervisor Detection"
+    "/.aws:AWS Credentials"
+    "/.gcloud:Google Cloud"
+    "/.azure:Azure Credentials"
+    "/vault:HashiCorp Vault"
+)
+
+for entry in "${SPECIAL_FILES[@]}"; do
+    file="${entry%:*}"
+    desc="${entry#*:}"
+    if [ -e "$file" ] 2>/dev/null; then
+        if [[ "$file" == *"docker"* ]]; then
+            alert_critical "🐳 CONTAINERIZATION: $desc"
+        elif [[ "$file" == *".aws"* ]] || [[ "$file" == *".gcloud"* ]] || [[ "$file" == *".azure"* ]]; then
+            alert_high "☁️  CLOUD CREDENTIALS: $desc"
+        else
+            alert_medium "🔍 DETECTED: $desc"
+        fi
+    fi
 done
 echo ""
 
