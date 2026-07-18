@@ -941,9 +941,9 @@ fi
 echo ""
 
 # ============================================
-# DOCKER - ANÁLISIS Y ESCAPE
+# CONTAINER ESCAPE VECTORS - ANÁLISIS GENERAL
 # ============================================
-print_header "🐳 DOCKER - CONFIGURACIÓN Y VECTORES DE ESCAPE"
+print_header "🔓 CONTAINER ESCAPE VECTORS - ANÁLISIS DE VECTORES DE ESCAPE"
 
 # Detectar si estamos en un contenedor
 IN_CONTAINER=0
@@ -951,6 +951,189 @@ if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
     alert_critical "🐳 RUNNING INSIDE CONTAINER - Escape analysis enabled"
     IN_CONTAINER=1
 fi
+echo ""
+
+if [ $IN_CONTAINER -eq 1 ]; then
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}1. CAPACIDADES PELIGROSAS (CAP_SYS_ADMIN, etc)${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # Verificar capacidades usando /proc/self/status
+    if [ -f /proc/self/status ]; then
+        CAPS=$(grep Cap /proc/self/status 2>/dev/null | grep -E "Cap(Inh|Prm|Eff|Bnd)")
+        if [ ! -z "$CAPS" ]; then
+            echo -e "${YELLOW}Raw capabilities from /proc/self/status:${NC}"
+            echo "$CAPS" | sed 's/^/  /'
+            echo ""
+
+            # Convertir hex a names si capsh disponible
+            if command -v capsh &> /dev/null; then
+                echo -e "${YELLOW}Decoded capabilities:${NC}"
+                capsh --print 2>/dev/null | sed 's/^/  /'
+                echo ""
+
+                # Buscar capacidades peligrosas
+                if capsh --print 2>/dev/null | grep -qE "cap_sys_admin|cap_sys_ptrace|cap_dac_read_search|cap_chown"; then
+                    alert_critical "🔴 DANGEROUS CAPABILITIES DETECTED!"
+                    echo -e "${RED}  cap_sys_admin     → kernel exploit, mount, nsenter${NC}"
+                    echo -e "${RED}  cap_sys_ptrace    → process manipulation, ASLR bypass${NC}"
+                    echo -e "${RED}  cap_dac_read_search → read any file${NC}"
+                    echo -e "${RED}  cap_chown         → privilege escalation${NC}"
+                fi
+            fi
+        else
+            info "No capability information in /proc/self/status"
+        fi
+    fi
+    echo ""
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}2. DISPOSITIVOS DEL HOST VISIBLES${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    echo -e "${YELLOW}Dispositivos de bloque (lsblk):${NC}"
+    if command -v lsblk &> /dev/null; then
+        DEVICES=$(lsblk 2>/dev/null)
+        if [ ! -z "$DEVICES" ]; then
+            echo "$DEVICES" | sed 's/^/  /'
+            alert_high "🔴 Host devices visible - posible mountpoint escalation"
+        else
+            info "lsblk not available"
+        fi
+    else
+        info "lsblk not installed"
+    fi
+    echo ""
+
+    echo -e "${YELLOW}Información de discos (fdisk):${NC}"
+    if command -v fdisk &> /dev/null; then
+        FDISK=$(fdisk -l 2>/dev/null | head -10)
+        if [ ! -z "$FDISK" ]; then
+            echo "$FDISK" | sed 's/^/  /'
+            alert_high "🔴 Disk information accessible"
+        fi
+    else
+        info "fdisk not installed"
+    fi
+    echo ""
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}3. MONTAJES SENSIBLES${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    echo -e "${YELLOW}Montajes actuales (mount):${NC}"
+    MOUNTS=$(mount 2>/dev/null | grep -E "docker\.sock|/proc|/sys|/dev|^/dev" | head -10)
+    if [ ! -z "$MOUNTS" ]; then
+        echo "$MOUNTS" | sed 's/^/  /'
+        if echo "$MOUNTS" | grep -q "docker\.sock"; then
+            alert_critical "🔴 CRITICAL: /var/run/docker.sock mounted (already checked above)"
+        fi
+        if echo "$MOUNTS" | grep -qE "/proc.*rw|/sys.*rw"; then
+            alert_high "🔴 /proc o /sys montados con permisos RW"
+        fi
+    fi
+    echo ""
+
+    echo -e "${YELLOW}Análisis de montajes (findmnt):${NC}"
+    if command -v findmnt &> /dev/null; then
+        FINDMNT=$(findmnt 2>/dev/null | grep -E "docker\.sock|/proc|/sys" | head -5)
+        if [ ! -z "$FINDMNT" ]; then
+            echo "$FINDMNT" | sed 's/^/  /'
+        else
+            info "No sensitive mounts detected via findmnt"
+        fi
+    else
+        info "findmnt not available"
+    fi
+    echo ""
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}4. KUBERNETES - SERVICE ACCOUNT${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    if [ -d /run/secrets/kubernetes.io/serviceaccount/ ]; then
+        alert_critical "🟦 KUBERNETES DETECTED - Running in K8s pod"
+        echo ""
+
+        echo -e "${YELLOW}Service Account Token:${NC}"
+        if [ -f /run/secrets/kubernetes.io/serviceaccount/token ]; then
+            alert_high "🔴 K8s token found at /run/secrets/kubernetes.io/serviceaccount/token"
+            TOKEN=$(head -c 50 /run/secrets/kubernetes.io/serviceaccount/token 2>/dev/null)
+            echo "  Token (first 50 chars): $TOKEN..."
+        fi
+        echo ""
+
+        echo -e "${YELLOW}Service Account Info:${NC}"
+        if [ -f /run/secrets/kubernetes.io/serviceaccount/namespace ]; then
+            NAMESPACE=$(cat /run/secrets/kubernetes.io/serviceaccount/namespace 2>/dev/null)
+            echo "  Namespace: $NAMESPACE"
+        fi
+
+        if [ -f /run/secrets/kubernetes.io/serviceaccount/ca.crt ]; then
+            echo "  CA Certificate: Found"
+        fi
+        echo ""
+
+        echo -e "${YELLOW}Posibles vectores de escape K8s:${NC}"
+        echo "  - Explotar permisos RBAC del service account"
+        echo "  - Acceder a la API de Kubernetes (/var/run/secrets/kubernetes.io/...)"
+        echo "  - Buscar pods privilegiados o con hostPath mounts"
+        echo "  - Token hijacking si está disponible"
+    else
+        info "Not running in Kubernetes"
+    fi
+    echo ""
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}5. SECCOMP & APPARMOR RESTRICTIONS${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    if [ -f /proc/self/status ]; then
+        SECCOMP=$(grep Seccomp /proc/self/status 2>/dev/null)
+        if [ ! -z "$SECCOMP" ]; then
+            echo "$SECCOMP" | sed 's/^/  /'
+            if echo "$SECCOMP" | grep -q "Seccomp:.*0"; then
+                alert_high "🔴 Seccomp disabled or minimal restrictions"
+            fi
+        fi
+    fi
+    echo ""
+
+    if [ -f /proc/self/attr/current ]; then
+        APPARMOR=$(cat /proc/self/attr/current 2>/dev/null)
+        if [ ! -z "$APPARMOR" ] && [ "$APPARMOR" != "unconfined" ]; then
+            echo -e "${YELLOW}AppArmor Profile: $APPARMOR${NC}"
+        fi
+    fi
+    echo ""
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}6. RESUMEN DE VECTORES DE ESCAPE DISPONIBLES${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+    echo -e "${YELLOW}Orden de intento de escape (por probabilidad):${NC}"
+    echo "  1️⃣  Docker socket access → docker run -v /:/host/ ..."
+    echo "  2️⃣  CAP_SYS_ADMIN → nsenter, unshare exploits"
+    echo "  3️⃣  Privileged container → device access, mount syscalls"
+    echo "  4️⃣  K8s token abuse → RBAC exploitation"
+    echo "  5️⃣  Host device mount → mount host filesystem"
+    echo "  6️⃣  /proc or /sys RW → kernel memory manipulation"
+    echo ""
+    echo -e "${RED}NO ASUMIR: .dockerenv existe → puedo escapar${NC}"
+    echo -e "${YELLOW}Verifica TODOS los vectores para máximas probabilidades de éxito${NC}"
+    echo ""
+
+fi
+
+# DOCKER - ANÁLISIS Y ESCAPE
+# ============================================
+print_header "🐳 DOCKER - CONFIGURACIÓN Y VECTORES DE ESCAPE"
 echo ""
 
 echo -e "${BLUE}Docker daemon status:${NC}"
