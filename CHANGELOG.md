@@ -51,7 +51,29 @@ All notable changes to NEXPEAS will be documented in this file.
 
 ---
 
-## [Unreleased]
+## [1.1.0] - Unreleased
+
+### Added
+- **Deep Scanning Mode** (`--deep` flag)
+  - UDP port listening detection
+  - Process-to-port correlation mapping
+  - /proc/self analysis (command line, working directory)
+  - Configuration file detection in current directory
+  - /etc/hosts enumeration
+  - Dotfiles analysis (~/.bashrc, ~/.profile, ~/.ssh/config, ~/.bash_history)
+- Command-line argument parsing
+- Help message (`--help` flag)
+- Environment variable discovery in dotfiles
+- Alias analysis for potential privilege escalation
+
+### Improved
+- Enhanced network reconnaissance with TCP and UDP analysis
+- Better shell configuration analysis for credential discovery
+- Process correlation for better service identification
+
+---
+
+## [Unreleased - Future]
 
 ### Planned Features
 - [ ] JSON output format

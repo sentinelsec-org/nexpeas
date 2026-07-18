@@ -131,6 +131,24 @@ bash <(curl -s https://raw.githubusercontent.com/yourusername/nexpeas/main/nexpe
 ```
 Runs complete enumeration on local system and displays beautiful report.
 
+### Deep Scanning Mode
+```bash
+./nexpeas.sh --deep
+```
+
+Enables advanced reconnaissance features:
+- **UDP Port Analysis**: Listens for UDP services
+- **Process Correlation**: Maps ports → PIDs → commands
+- **Dotfiles Analysis**: Searches shell configs (~/.bashrc, ~/.profile, ~/.ssh/config)
+- **Command History**: Extracts potential credentials from ~/.bash_history
+- **Enhanced Enumeration**: /proc/self analysis and /etc/hosts mapping
+
+Perfect for:
+- Advanced privilege escalation assessment
+- Post-exploitation reconnaissance
+- Sensitive configuration discovery
+- Shell history analysis for credentials
+
 ### Remote Deployment with HTTP Server
 
 **Start server on attacker machine:**
