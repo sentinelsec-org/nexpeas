@@ -61,15 +61,39 @@ All notable changes to NEXPEAS will be documented in this file.
   - Configuration file detection in current directory
   - /etc/hosts enumeration
   - Dotfiles analysis (~/.bashrc, ~/.profile, ~/.ssh/config, ~/.bash_history)
-- Command-line argument parsing
-- Help message (`--help` flag)
-- Environment variable discovery in dotfiles
-- Alias analysis for potential privilege escalation
+
+- **Exhaustive Configuration File Discovery**
+  - Docker containers detection (.dockerenv)
+  - Cloud credentials scanning (.aws, .gcloud, .azure)
+  - Environment variable files (.env, .env.local, etc)
+  - Application configuration files (package.json, requirements.txt, Dockerfile)
+  - Database configs (wp-config.php, database.yml)
+  - SSH keys and authorized_keys
+  - Backup and dump files
+  - Hypervisor and container technology detection
+
+- **Docker Container Escape Analysis**
+  - Container detection and alerts
+  - Docker daemon accessibility checks
+  - Available images listing (with escape vector suggestions)
+  - Volume analysis for breakout opportunities
+  - Docker socket permissions analysis
+  - Container mount point inspection
+  - Critical escape vectors identification (docker run -v /:/host/)
+  - Docker credentials extraction from config files
+
+- **Additional Features**
+  - Command-line argument parsing (--deep, --help)
+  - Terminal history preservation (removed clear on banner)
+  - Environment variable discovery in dotfiles
+  - Alias analysis for privilege escalation
 
 ### Improved
 - Enhanced network reconnaissance with TCP and UDP analysis
 - Better shell configuration analysis for credential discovery
 - Process correlation for better service identification
+- Comprehensive file discovery across system
+- Container-aware privilege escalation detection
 
 ---
 
