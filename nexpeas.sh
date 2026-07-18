@@ -941,20 +941,79 @@ fi
 echo ""
 
 # ============================================
-# DOCKER - ANÁLISIS
+# DOCKER - ANÁLISIS Y ESCAPE
 # ============================================
-print_header "🐳 DOCKER - CONFIGURACIÓN Y SECRETOS"
+print_header "🐳 DOCKER - CONFIGURACIÓN Y VECTORES DE ESCAPE"
 
-echo -e "${BLUE}Docker status:${NC}"
+# Detectar si estamos en un contenedor
+IN_CONTAINER=0
+if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
+    alert_critical "🐳 RUNNING INSIDE CONTAINER - Escape analysis enabled"
+    IN_CONTAINER=1
+fi
+echo ""
+
+echo -e "${BLUE}Docker daemon status:${NC}"
 if command -v docker &> /dev/null; then
-    if docker ps 2>/dev/null; then
-        alert_medium "Docker disponible y corriendo"
+    if docker ps 2>/dev/null >/dev/null; then
+        alert_critical "🔴 CRITICAL: Docker daemon accesible (posible escape)"
         docker ps 2>/dev/null | sed 's/^/  /'
     else
-        info "Docker instalado pero no corriendo"
+        info "Docker instalado pero no corriendo/accesible"
     fi
 else
     info "Docker no instalado"
+fi
+echo ""
+
+if [ $IN_CONTAINER -eq 1 ] || command -v docker &> /dev/null; then
+    echo -e "${BLUE}Docker images disponibles:${NC}"
+    DOCKER_IMAGES=$(docker images 2>/dev/null)
+    if [ ! -z "$DOCKER_IMAGES" ]; then
+        echo "$DOCKER_IMAGES" | sed 's/^/  /'
+        IMAGES_COUNT=$(echo "$DOCKER_IMAGES" | wc -l)
+        alert_high "🔴 $IMAGES_COUNT imágenes disponibles - Posible vector de escape (docker run -it -v /:/host/ IMAGE chroot /host/ bash)"
+    else
+        info "No images found"
+    fi
+    echo ""
+
+    echo -e "${BLUE}Docker volumes:${NC}"
+    DOCKER_VOLUMES=$(docker volume ls 2>/dev/null)
+    if [ ! -z "$DOCKER_VOLUMES" ]; then
+        echo "$DOCKER_VOLUMES" | sed 's/^/  /'
+    else
+        info "No volumes"
+    fi
+    echo ""
+
+    echo -e "${BLUE}Docker networks:${NC}"
+    DOCKER_NETWORKS=$(docker network ls 2>/dev/null)
+    if [ ! -z "$DOCKER_NETWORKS" ]; then
+        echo "$DOCKER_NETWORKS" | sed 's/^/  /'
+    else
+        info "No networks"
+    fi
+    echo ""
+
+    echo -e "${BLUE}Container info (inspect current):${NC}"
+    CONTAINER_ID=$(docker ps --no-trunc --quiet 2>/dev/null | head -1)
+    if [ ! -z "$CONTAINER_ID" ]; then
+        alert_medium "Current container: $CONTAINER_ID"
+        docker inspect "$CONTAINER_ID" 2>/dev/null | grep -E "Mounts|Env|Ports" | sed 's/^/  /'
+    fi
+    echo ""
+fi
+
+echo -e "${BLUE}Docker socket access:${NC}"
+if [ -S /var/run/docker.sock ]; then
+    if [ -w /var/run/docker.sock ]; then
+        alert_critical "🔴 CRITICAL: /var/run/docker.sock is writable!"
+    else
+        echo "  /var/run/docker.sock exists (not writable by current user)"
+    fi
+else
+    info "Docker socket not found"
 fi
 echo ""
 
@@ -963,15 +1022,22 @@ DOCKER_CONFIGS=(
     ~/.docker/config.json
     /etc/docker/daemon.json
     ~/.dockercfg
+    /root/.docker/config.json
 )
 
+FOUND_DOCKER_CONFIG=0
 for config in "${DOCKER_CONFIGS[@]}"; do
     config_expanded="${config/#~/$HOME}"
     if [ -f "$config_expanded" ]; then
-        alert_high "DOCKER CONFIG: $config_expanded"
-        cat "$config_expanded" 2>/dev/null | sed 's/^/  /'
+        alert_high "🔑 DOCKER CONFIG: $config_expanded"
+        grep -iE "auth|username|password|registry" "$config_expanded" 2>/dev/null | sed 's/^/  /'
+        ((FOUND_DOCKER_CONFIG++))
     fi
 done
+
+if [ $FOUND_DOCKER_CONFIG -eq 0 ]; then
+    info "No docker config files found"
+fi
 echo ""
 
 # ============================================
