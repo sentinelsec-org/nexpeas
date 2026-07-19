@@ -941,6 +941,150 @@ fi
 echo ""
 
 # ============================================
+# FUNCIÓN: Análisis de bind mounts peligrosos
+# ============================================
+check_dangerous_container_mounts() {
+    local identity_root_mapping="false"
+    local current_uid
+    current_uid="$(id -u)"
+
+    # Verificar UID mapping
+    local host_uid_for_root
+    host_uid_for_root="$(awk '$1 == 0 {print $2; exit}' /proc/self/uid_map 2>/dev/null)"
+
+    if [ "$current_uid" = "0" ] && [ "$host_uid_for_root" = "0" ]; then
+        identity_root_mapping="true"
+    fi
+
+    echo -e "${YELLOW}Verificando mapeo de UIDs...${NC}"
+    if [ "$current_uid" = "0" ]; then
+        if [ "$identity_root_mapping" = "true" ]; then
+            alert_critical "🔴 UID 0 (root) del contenedor = UID 0 (root) del host!"
+            echo -e "${RED}    → Archivo creado dentro del contenedor será root en el host${NC}"
+        else
+            echo -e "${YELLOW}    • UID 0 del contenedor mapea a UID ${host_uid_for_root:-desconocido} del host${NC}"
+        fi
+    fi
+    echo ""
+
+    echo -e "${YELLOW}Analizando montajes bind escribibles (bind mounts)...${NC}"
+
+    local found_dangerous=0
+
+    # Parsear /proc/self/mountinfo
+    awk '
+    {
+        separator = 0
+        for (i = 7; i <= NF; i++) {
+            if ($i == "-") {
+                separator = i
+                break
+            }
+        }
+        if (separator == 0) next
+
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n", \
+            $4, $5, $6, \
+            $(separator + 1), $(separator + 2), $(separator + 3)
+    }
+    ' /proc/self/mountinfo 2>/dev/null | while IFS=$'\t' read -r fsroot target mount_opts fstype source super_opts
+    do
+        # Excluir montajes del sistema
+        case "$target" in
+            /|/proc|/proc/*|/sys|/sys/*|/dev|/dev/*|/run|/run/*|/etc/hosts|/etc/hostname|/etc/resolv.conf)
+                continue ;;
+        esac
+
+        case "$fstype" in
+            proc|sysfs|tmpfs|devpts|mqueue|overlay|cgroup|cgroup2|squashfs)
+                continue ;;
+        esac
+
+        # Debe ser RW
+        case ",${mount_opts},${super_opts}," in
+            *,rw,*) ;;
+            *) continue ;;
+        esac
+
+        [ -w "$target" ] || continue
+
+        # Detectar protecciones
+        local has_nosuid="false"
+        local has_noexec="false"
+
+        case ",${mount_opts},${super_opts}," in
+            *,nosuid,*) has_nosuid="true" ;;
+        esac
+
+        case ",${mount_opts},${super_opts}," in
+            *,noexec,*) has_noexec="true" ;;
+        esac
+
+        # Evaluar severidad
+        local severity="MEDIUM"
+        local reasons=""
+
+        if [ "$has_nosuid" = "false" ]; then
+            reasons="SUID permitido"
+            severity="HIGH"
+        fi
+
+        if [ "$has_noexec" = "false" ]; then
+            [ -z "$reasons" ] && reasons="ejecución permitida" || reasons="${reasons}; ejecución permitida"
+        fi
+
+        # Detectar raíces interesantes del host
+        case "$fsroot" in
+            /home/*|/root/*|/opt/*|/srv/*|/var/www/*|/var/log/*|/tmp/*|/var/tmp/*)
+                [ -z "$reasons" ] && reasons="ruta host sensible" || reasons="${reasons}; ruta host sensible"
+                severity="HIGH"
+                ;;
+        esac
+
+        # Máxima severidad si root + RW + SUID
+        if [ "$identity_root_mapping" = "true" ] && [ "$has_nosuid" = "false" ] && [ "$has_noexec" = "false" ]; then
+            severity="CRITICAL"
+            reasons="${reasons}; UID mapping = root"
+        fi
+
+        # Mostrar hallazgo
+        echo ""
+        if [ "$severity" = "CRITICAL" ]; then
+            echo -e "${RED}[🔴 CRITICAL] Escalada potencial mediante bind mount${NC}"
+        elif [ "$severity" = "HIGH" ]; then
+            echo -e "${YELLOW}[🟡 HIGH] Bind mount sospechoso${NC}"
+        else
+            echo -e "${ORANGE}[🟠 MEDIUM] Bind mount escribible${NC}"
+        fi
+
+        echo -e "    ${BOLD}Target (contenedor)${NC}:     $target"
+        echo -e "    ${BOLD}Source (host)${NC}:           $fsroot"
+        echo -e "    ${BOLD}Dispositivo${NC}:             $source"
+        echo -e "    ${BOLD}Filesystem${NC}:              $fstype"
+        echo -e "    ${BOLD}Opciones${NC}:                ${mount_opts},${super_opts}"
+        echo -e "    ${BOLD}Riesgos${NC}:                 $reasons"
+        echo ""
+
+        # Mostrar vectores específicos
+        if [ "$has_nosuid" = "false" ]; then
+            echo -e "    ${RED}→ SUID no está deshabilitado (nosuid)${NC}"
+            echo -e "       Puedes crear archivo SUID que escale privilegios en el host"
+        fi
+
+        if [ "$has_noexec" = "false" ]; then
+            echo -e "    ${RED}→ Ejecución de binarios permitida (noexec no está configurado)${NC}"
+            echo -e "       Puedes ejecutar código directamente desde este montaje"
+        fi
+
+        found_dangerous=1
+    done
+
+    if [ $found_dangerous -eq 0 ]; then
+        echo -e "${GREEN}✅ No se detectaron bind mounts peligrosos${NC}"
+    fi
+}
+
+# ============================================
 # CONTAINER ESCAPE VECTORS - ANÁLISIS GENERAL
 # ============================================
 print_header "🔓 CONTAINER ESCAPE VECTORS - ANÁLISIS DE VECTORES DE ESCAPE"
@@ -954,6 +1098,15 @@ fi
 echo ""
 
 if [ $IN_CONTAINER -eq 1 ]; then
+
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo -e "${YELLOW}0. BIND MOUNTS PELIGROSOS - ESCALADA AL HOST${NC}"
+    echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
+    echo ""
+
+    # Llamar la función de análisis de bind mounts
+    check_dangerous_container_mounts
+    echo ""
 
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo -e "${YELLOW}1. CAPACIDADES PELIGROSAS (CAP_SYS_ADMIN, etc)${NC}"
@@ -1025,22 +1178,75 @@ if [ $IN_CONTAINER -eq 1 ]; then
     echo -e "${BLUE}═══════════════════════════════════════════════════════════${NC}"
     echo ""
 
+    DANGEROUS_MOUNTS=0
+    PROC_RW=0
+    SYS_RW=0
+    DOCKER_SOCK=0
+
     echo -e "${YELLOW}Montajes actuales (mount):${NC}"
-    MOUNTS=$(mount 2>/dev/null | grep -E "docker\.sock|/proc|/sys|/dev|^/dev" | head -10)
+    MOUNTS=$(mount 2>/dev/null)
     if [ ! -z "$MOUNTS" ]; then
-        echo "$MOUNTS" | sed 's/^/  /'
-        if echo "$MOUNTS" | grep -q "docker\.sock"; then
-            alert_critical "🔴 CRITICAL: /var/run/docker.sock mounted (already checked above)"
-        fi
-        if echo "$MOUNTS" | grep -qE "/proc.*rw|/sys.*rw"; then
-            alert_high "🔴 /proc o /sys montados con permisos RW"
+        # Búsqueda específica de montajes peligrosos
+        echo "$MOUNTS" | while read line; do
+            # /proc en RW
+            if echo "$line" | grep -qE "^proc.*on /proc.*\(rw"; then
+                echo -e "${RED}🔴 ⚠️  DANGEROUS: $line${NC}"
+                ((DANGEROUS_MOUNTS++))
+                PROC_RW=1
+            # /sys en RW
+            elif echo "$line" | grep -qE "^sysfs.*on /sys.*\(rw"; then
+                echo -e "${RED}🔴 ⚠️  DANGEROUS: $line${NC}"
+                ((DANGEROUS_MOUNTS++))
+                SYS_RW=1
+            # /dev en RW (especialmente peligroso)
+            elif echo "$line" | grep -qE "on /dev type.*\(rw"; then
+                echo -e "${RED}🔴 CRITICAL: $line${NC}"
+                ((DANGEROUS_MOUNTS++))
+            # docker.sock
+            elif echo "$line" | grep -q "docker\.sock"; then
+                echo -e "${RED}🔴 CRITICAL: $line${NC}"
+                ((DANGEROUS_MOUNTS++))
+                DOCKER_SOCK=1
+            # Mostrar también los seguros (información)
+            elif echo "$line" | grep -qE "/proc|/sys|/dev" | grep -qE "\(ro,"; then
+                echo -e "${GREEN}✅ SAFE: $line${NC}"
+            fi
+        done
+        echo ""
+
+        # Alertas consolidadas
+        if [ $PROC_RW -eq 1 ] || [ $SYS_RW -eq 1 ]; then
+            alert_critical "🔴 ⚠️  CRITICAL: /proc o /sys montados en LECTURA/ESCRITURA (RW)!"
+            echo ""
+            echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+            echo -e "${RED}VECTORES DE EXPLOTACIÓN:${NC}"
+            echo -e "${RED}═══════════════════════════════════════════════════════════${NC}"
+            if [ $PROC_RW -eq 1 ]; then
+                echo ""
+                echo -e "${BOLD}📝 /proc en RW permite:${NC}"
+                echo -e "   • Modificar /proc/self/oom_score_adj → evitar OOM killer"
+                echo -e "   • Manipular /proc/sys/kernel/* → kernel settings"
+                echo -e "   • Leer /proc/[PID]/environ → robar variables de otros procesos"
+                echo -e "   • Escribir en /proc/sysrq-trigger → reboot/shutdown"
+                echo ""
+                echo -e "${YELLOW}Ataque: echo c > /proc/sysrq-trigger  (crash kernel)${NC}"
+            fi
+            if [ $SYS_RW -eq 1 ]; then
+                echo ""
+                echo -e "${BOLD}📝 /sys en RW permite:${NC}"
+                echo -e "   • Modificar /sys/kernel/* → kernel parameters"
+                echo -e "   • Manipular módulos del kernel"
+                echo -e "   • Acceso a drivers del sistema"
+                echo -e "   • Posibilidad de kernel exploit"
+            fi
+            echo ""
         fi
     fi
     echo ""
 
     echo -e "${YELLOW}Análisis de montajes (findmnt):${NC}"
     if command -v findmnt &> /dev/null; then
-        FINDMNT=$(findmnt 2>/dev/null | grep -E "docker\.sock|/proc|/sys" | head -5)
+        FINDMNT=$(findmnt 2>/dev/null | grep -E "docker\.sock|/proc|/sys|/dev" | head -10)
         if [ ! -z "$FINDMNT" ]; then
             echo "$FINDMNT" | sed 's/^/  /'
         else

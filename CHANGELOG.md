@@ -82,11 +82,21 @@ All notable changes to NEXPEAS will be documented in this file.
   - Critical escape vectors identification (docker run -v /:/host/)
   - Docker credentials extraction from config files
 
+- **Bind Mount Escalation Analysis** (NEW)
+  - UID mapping detection (container UID 0 → host UID mapping)
+  - Writable bind mount analysis with RW permission checks
+  - SUID/noexec protection verification
+  - Host filesystem root tracking and correlation
+  - Critical alerts for root-to-root UID mapping with RW mounts
+  - Per-mount severity assessment (CRITICAL/HIGH/MEDIUM)
+  - Specific exploitation vectors shown for each dangerous mount
+
 - **Additional Features**
   - Command-line argument parsing (--deep, --help)
   - Terminal history preservation (removed clear on banner)
   - Environment variable discovery in dotfiles
   - Alias analysis for privilege escalation
+  - Improved mount analysis with clearer visualization of RW mounts
 
 ### Improved
 - Enhanced network reconnaissance with TCP and UDP analysis
