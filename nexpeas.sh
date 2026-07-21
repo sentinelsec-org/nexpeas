@@ -311,7 +311,7 @@ else
     echo -e "${BOLD}[*] Searching for flags...${NC}"
     FOUND_FLAGS=0
     for pattern in "user.txt" "root.txt" "flag.txt" "proof.txt"; do
-        FOUND=$(find /home /root /tmp /opt -maxdepth 3 -name "$pattern" -type f 2>/dev/null | head -3)
+        FOUND=$(timeout 2 find /home /root /tmp /opt -maxdepth 3 -name "$pattern" -type f 2>/dev/null | head -3)
         if [ -n "$FOUND" ]; then
             echo "$FOUND" | while read -r f; do
                 alert_critical "FLAG: $f"
@@ -338,7 +338,8 @@ else
 
     # SUID
     echo -e "${BOLD}[*] SUID Binaries${NC}"
-    SUID_LIST=$(find /usr /bin /sbin /opt -perm -4000 -type f 2>/dev/null)
+    echo -e "${CYAN}  Scanning /usr /bin /sbin (timeout 3s)...${NC}"
+    SUID_LIST=$(timeout 3 find /bin /sbin /usr/bin /usr/sbin -perm -4000 -type f 2>/dev/null | head -20)
     if [ -n "$SUID_LIST" ]; then
         echo "$SUID_LIST" | while read -r binary; do
             case "$binary" in
@@ -354,7 +355,7 @@ else
             esac
         done
     else
-        info "No SUID binaries found"
+        info "No SUID binaries found or timeout"
     fi
     echo ""
 
