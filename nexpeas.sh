@@ -3,6 +3,20 @@
 # NEXPEAS - Next Generation Enum/Priv Escalation Assessment Script
 # Más limpio que linpeas, enfocado en hallazgos relevantes
 
+# Auto-detect and use best available shell
+if [ -n "$NEXPEAS_SHELL_REEXEC" ]; then
+    :
+elif [ -z "$BASH_VERSION" ]; then
+    if command -v bash >/dev/null 2>&1; then
+        export NEXPEAS_SHELL_REEXEC=1
+        exec bash "$0" "$@"
+    else
+        echo "⚠️  NEXPEAS requires bash. Alpine users: install with: apk add bash"
+        echo "   Then run: bash nexpeas.sh"
+        exit 1
+    fi
+fi
+
 set -o pipefail
 
 # Parse arguments
