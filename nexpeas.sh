@@ -371,23 +371,96 @@ else
     fi
     echo ""
 
-    # DOCKER
-    echo -e "${BOLD}[*] Container Detection${NC}"
-    if [ -f /.dockerenv ]; then
-        alert_critical "Running inside Docker container!"
+    # DOCKER & CONTAINER ESCAPE
+    echo -e "${BOLD}[*] Container Escape Analysis${NC}"
+    if [ -f /.dockerenv ] || [ -f /run/.containerenv ]; then
+        alert_critical "RUNNING INSIDE CONTAINER - Escape analysis enabled"
+        echo ""
 
-        UID_MAP=$(cat /proc/self/uid_map 2>/dev/null | awk '$1==0{print "UID 0 -> UID " $2}')
-        [ -n "$UID_MAP" ] && alert_high "$UID_MAP"
-
-        MOUNTS=$(mount 2>/dev/null | grep -E "rw.*host|/logs|/home")
-        if [ -n "$MOUNTS" ]; then
-            alert_high "Writable bind mounts detected:"
-            echo "$MOUNTS" | head -3
+        # UID MAPPING
+        echo -e "${BOLD}  ├─ UID Mapping Analysis:${NC}"
+        UID_MAP=$(cat /proc/self/uid_map 2>/dev/null)
+        if echo "$UID_MAP" | awk '$1==0{if($2==0) print "matched"}' | grep -q matched; then
+            alert_critical "    UID 0 (container) → UID 0 (host) - CRITICAL!"
+            echo "    Can create SUID files that escalate on host"
+        else
+            HOST_UID=$(echo "$UID_MAP" | awk '$1==0{print $2}')
+            [ -n "$HOST_UID" ] && echo "    UID 0 (container) → UID $HOST_UID (host)"
         fi
+        echo ""
 
+        # BIND MOUNTS
+        echo -e "${BOLD}  ├─ Bind Mounts (Writable):${NC}"
+        WRITABLE_MOUNTS=$(mount 2>/dev/null | grep "rw" | grep -E "ext4|vfat|nfs|host|logs|home|srv|opt|var/www|data" || echo "")
+        if [ -n "$WRITABLE_MOUNTS" ]; then
+            alert_high "    Writable bind mounts found:"
+            echo "$WRITABLE_MOUNTS" | while read -r mount; do
+                # Check if mount lacks nosuid/noexec
+                if ! echo "$mount" | grep -qE "nosuid|noexec"; then
+                    alert_critical "      $mount (SUID/EXEC allowed)"
+                else
+                    echo "      $mount"
+                fi
+            done
+        else
+            echo "    No suspicious writable mounts detected"
+        fi
+        echo ""
+
+        # /PROC & /SYS RW
+        echo -e "${BOLD}  ├─ Sensitive Mounts (RW):${NC}"
+        PROC_RW=$(mount 2>/dev/null | grep "^proc.*on /proc.*rw" || echo "")
+        SYS_RW=$(mount 2>/dev/null | grep "^sysfs.*on /sys.*rw" || echo "")
+        if [ -n "$PROC_RW" ]; then
+            alert_critical "    /proc mounted RW - kernel exploitation possible"
+        fi
+        if [ -n "$SYS_RW" ]; then
+            alert_critical "    /sys mounted RW - kernel tuning possible"
+        fi
+        [ -z "$PROC_RW" ] && [ -z "$SYS_RW" ] && echo "    /proc and /sys mounted read-only (safe)"
+        echo ""
+
+        # DOCKER SOCKET
+        echo -e "${BOLD}  ├─ Docker Socket:${NC}"
         if [ -S /var/run/docker.sock 2>/dev/null ]; then
-            alert_critical "Docker socket accessible!"
+            alert_critical "    /var/run/docker.sock ACCESSIBLE"
+            echo "    Can spawn privileged containers → full escape"
+            if command -v docker >/dev/null 2>&1; then
+                DOCKER_IMAGES=$(timeout 2 docker images 2>/dev/null | tail -5)
+                [ -n "$DOCKER_IMAGES" ] && echo "    Available images:" && echo "$DOCKER_IMAGES" | sed 's/^/      /'
+            fi
+        else
+            echo "    Docker socket not accessible (good)"
         fi
+        echo ""
+
+        # CAPABILITIES
+        echo -e "${BOLD}  ├─ Dangerous Capabilities:${NC}"
+        CAP_LIST=$(cat /proc/self/status 2>/dev/null | grep "Cap" || echo "")
+        if [ -n "$CAP_LIST" ]; then
+            if command -v capsh >/dev/null 2>&1; then
+                CAPS=$(capsh --print 2>/dev/null | grep -E "cap_sys_admin|cap_sys_ptrace|cap_dac_read_search|cap_chown" || echo "")
+                if [ -n "$CAPS" ]; then
+                    alert_high "    Dangerous capabilities:"
+                    echo "$CAPS" | sed 's/^/      /'
+                else
+                    echo "    No dangerous capabilities"
+                fi
+            else
+                echo "    capsh not available (cannot decode capabilities)"
+            fi
+        fi
+        echo ""
+
+        # ESCAPE SUMMARY
+        echo -e "${BOLD}  └─ Escape Vectors (Try in order):${NC}"
+        echo "    1. Docker socket → docker run -v /:/host/ IMAGE"
+        echo "    2. Capabilities → CAP_SYS_ADMIN, CAP_SYS_PTRACE"
+        echo "    3. Bind mounts → Write SUID binary to shared mount"
+        echo "    4. /proc RW → Kernel exploitation"
+        echo "    5. Host devices → lsblk, fdisk -l"
+        echo ""
+
     else
         info "Not in container"
     fi
