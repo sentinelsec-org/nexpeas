@@ -17,9 +17,12 @@ RED = '\033[0;31m'
 BOLD = '\033[1m'
 NC = '\033[0m'
 
-def get_ip_from_interface():
-    """Obtiene la IP de tun0 o eth0"""
-    interfaces = ['tun0', 'eth0', 'wlan0', 'ens33', 'ens0', 'enp0s3', 'enp6s0']
+def get_ip_from_interface(specific_iface=None):
+    """Obtiene la IP de una interfaz específica o autodetecta"""
+    if specific_iface:
+        interfaces = [specific_iface]
+    else:
+        interfaces = ['tun0', 'eth0', 'wlan0', 'ens33', 'ens0', 'enp0s3', 'enp6s0']
 
     for iface in interfaces:
         try:
@@ -38,6 +41,11 @@ def get_ip_from_interface():
                         return ip, iface
         except (subprocess.TimeoutExpired, Exception):
             continue
+
+    # Si se especificó interfaz pero no existe, error
+    if specific_iface:
+        print(f"{RED}[ERROR] Interfaz '{specific_iface}' no encontrada{NC}")
+        sys.exit(1)
 
     # Fallback
     try:
@@ -75,8 +83,11 @@ def main():
     script_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in dir() else os.getcwd()
     os.chdir(script_dir)
 
+    # Obtener interfaz de argumentos si se proporciona
+    specific_iface = sys.argv[1] if len(sys.argv) > 1 else None
+
     # Obtener IP
-    ip, interface = get_ip_from_interface()
+    ip, interface = get_ip_from_interface(specific_iface)
 
     # Encontrar puerto disponible
     port = find_available_port(8000)
